@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.kotlin/
+# Never commit credentials or certificates
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+secrets.properties
