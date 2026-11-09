@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -48,9 +49,13 @@ class PollingController(
     fun release() {
         users = (users - 1).coerceAtLeast(0)
         if (users == 0) {
-            job?.cancel()
+            val running = job
             job = null
-            hub.close()
+            // Stop polling and save off the main thread, after the current poll has finished.
+            scope.launch {
+                running?.cancelAndJoin()
+                hub.close()
+            }
         }
     }
 

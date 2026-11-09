@@ -247,9 +247,13 @@ fun SettingsScreen(state: HubState, graph: AppGraph) {
             val pm = context.getSystemService(PowerManager::class.java)
             if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
                 OutlinedButton(onClick = {
-                    context.startActivity(
-                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
-                    )
+                    try {
+                        context.startActivity(
+                            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")),
+                        )
+                    } catch (e: Exception) {
+                        message = "Bitte in den Android-Einstellungen unter Akku die Optimierung für diese App abschalten."
+                    }
                 }) { Text("Akku-Optimierung für die App abschalten") }
             }
         }

@@ -75,7 +75,7 @@ class Notifier(private val context: Context) {
     )
 
     fun serviceNotification(): Notification = NotificationCompat.Builder(context, CHANNEL_SERVICE)
-        .setSmallIcon(R.drawable.ic_launcher)
+        .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle("Rasier Speicher")
         .setContentText("Überwacht Speicher und Automatiken")
         .setOngoing(true)
@@ -95,7 +95,7 @@ class Notifier(private val context: Context) {
         for (a in alerts) {
             if (a.severity == Alert.Severity.INFO || !shown.add(a.key)) continue
             val n = NotificationCompat.Builder(context, CHANNEL_ALERTS)
-                .setSmallIcon(R.drawable.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(a.title)
                 .setContentText(a.message)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(a.message))

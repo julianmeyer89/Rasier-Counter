@@ -153,8 +153,10 @@ class EnergyHub(
         ok
     }
 
-    fun close() {
+    /** Closes the CT002 socket and saves everything. Waits for a running poll to finish first. */
+    suspend fun close() = mutex.withLock {
         ctReader?.close()
+        ctReader = null
         persist(force = true)
     }
 
