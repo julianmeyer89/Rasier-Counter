@@ -22,7 +22,7 @@ sealed interface BatteryCommand {
 }
 
 /** Executes commands on real or simulated devices. */
-interface BatteryController {
+fun interface BatteryController {
     /** Returns true when the device confirmed (or at least accepted) the command. */
     suspend fun execute(command: BatteryCommand): Boolean
 }
