@@ -20,8 +20,21 @@ jobs:
 
       # The ubuntu-latest image ships the Android SDK and sets ANDROID_HOME,
       # so settings.gradle.kts includes the :app module here.
-      - name: Unit tests (core)
-        run: ./gradlew :core:test
+      - name: Unit tests (core + server)
+        run: ./gradlew :core:test :server:test
+
+      - name: Build server
+        run: ./gradlew :server:installDist
+
+      - name: Package server
+        run: tar -czf rasier-server.tar.gz -C server/build/install server
+
+      - name: Upload server
+        uses: actions/upload-artifact@v7
+        with:
+          name: rasier-server
+          path: rasier-server.tar.gz
+          if-no-files-found: error
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
