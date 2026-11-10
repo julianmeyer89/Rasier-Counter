@@ -201,9 +201,10 @@ class ServerHub(
 
         val buckets: List<Pair<String, DailyEnergy>> = when (bucket) {
             Bucket.HOUR -> hourlyBuckets(from)
-            Bucket.DAY -> daysIn(from, to).map { it.date.substring(5) to it }
+            // Labels in German date format: DAY -> "TT.MM.", MONTH -> "MM.JJJJ".
+            Bucket.DAY -> daysIn(from, to).map { (it.date.substring(8, 10) + "." + it.date.substring(5, 7) + ".") to it }
             Bucket.MONTH -> daysIn(from, to).groupBy { it.date.substring(0, 7) }
-                .toSortedMap().map { (ym, list) -> ym to list.sum(ym) }
+                .toSortedMap().map { (ym, list) -> (ym.substring(5) + "." + ym.substring(0, 4)) to list.sum(ym) }
         }
         val total = buckets.map { it.second }.fold(DailyEnergy(date = label)) { a, b -> a + b }.copy(date = label)
 

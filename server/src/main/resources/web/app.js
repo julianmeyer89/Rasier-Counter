@@ -30,7 +30,7 @@ function ago(ms) {
   if (s < 60) return "vor " + s + " s";
   if (s < 3600) return "vor " + Math.floor(s / 60) + " min";
   if (s < 86400) return "vor " + Math.floor(s / 3600) + " h";
-  return new Date(ms).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 function toast(msg) {
   const t = document.getElementById("toast");
@@ -199,6 +199,7 @@ let statsOff = new Set(JSON.parse(localStorage.getItem("statsOff") || "[]"));
 const pad = (n) => String(n).padStart(2, "0");
 const fmt = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 const fmtMs = (ms) => fmt(new Date(ms));
+const deDate = (d) => d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
 
 function statsPersist() {
   localStorage.setItem("statsOff", JSON.stringify([...statsOff]));
@@ -222,8 +223,8 @@ function nav(delta) {
 function startOfWeek(d) { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
 function computeWindow() {
   const a = statsView.anchor;
-  if (statsView.mode === "day") return { from: fmt(a), to: fmt(a), bucket: "hour", label: a.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short", year: "numeric" }) };
-  if (statsView.mode === "week") { const s = startOfWeek(a), e = new Date(s); e.setDate(s.getDate() + 6); return { from: fmt(s), to: fmt(e), bucket: "day", label: s.toLocaleDateString("de-DE", { day: "numeric", month: "short" }) + "–" + e.toLocaleDateString("de-DE", { day: "numeric", month: "short", year: "numeric" }) }; }
+  if (statsView.mode === "day") return { from: fmt(a), to: fmt(a), bucket: "hour", label: a.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }) };
+  if (statsView.mode === "week") { const s = startOfWeek(a), e = new Date(s); e.setDate(s.getDate() + 6); return { from: fmt(s), to: fmt(e), bucket: "day", label: deDate(s) + "–" + deDate(e) }; }
   if (statsView.mode === "month") { const s = new Date(a.getFullYear(), a.getMonth(), 1), e = new Date(a.getFullYear(), a.getMonth() + 1, 0); return { from: fmt(s), to: fmt(e), bucket: "day", label: a.toLocaleDateString("de-DE", { month: "long", year: "numeric" }) }; }
   if (statsView.mode === "year") return { from: a.getFullYear() + "-01-01", to: a.getFullYear() + "-12-31", bucket: "month", label: String(a.getFullYear()) };
   const f = statsView.from || fmt(a), t = statsView.to || fmt(a);
@@ -390,7 +391,7 @@ async function loadEvents() {
   try {
     const ev = await api("events");
     const d = document.getElementById("events");
-    if (d) d.innerHTML = ev.map(e => `<div>${new Date(e.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} ${e.text}</div>`).join("") || "Keine Einträge.";
+    if (d) d.innerHTML = ev.map(e => `<div>${new Date(e.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} ${e.text}</div>`).join("") || "Keine Einträge.";
   } catch (e) { /* ignore */ }
 }
 
