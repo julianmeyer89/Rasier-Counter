@@ -21,6 +21,8 @@ data class StateDto(
     val alerts: List<AlertDto>,
     val calibration: CalibrationDto?,
     val suggestions: List<CommandDto>,
+    /** Timestamp of the most recent meter reading, for the "since last reading" shortcut. */
+    val lastMeterReadingMs: Long? = null,
 )
 
 @Serializable

@@ -361,6 +361,7 @@ class ServerHub(
             alerts = alerts.map { AlertDto.from(it) },
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
+            lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
         )
     }
 

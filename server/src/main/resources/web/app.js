@@ -143,12 +143,18 @@ async function loadHistory() {
   try {
     const h = await api("history?hours=24");
     const c = document.getElementById("histChart");
-    if (!c) return;
+    if (!c || !h.points.length) return;
+    const t0 = h.points[0].t, t1 = h.points[h.points.length - 1].t;
+    const xTicks = [];
+    for (let i = 0; i <= 4; i++) {
+      const tx = t0 + (t1 - t0) * i / 4;
+      xTicks.push({ x: tx, label: new Date(tx).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) });
+    }
     lineChart(c, [
       { color: COL.import, points: h.points.filter(p => p.gridW != null).map(p => [p.t, p.gridW]) },
       { color: COL.solar, points: h.points.map(p => [p.t, p.pvW]) },
       { color: COL.battery, points: h.points.map(p => [p.t, p.outW]) },
-    ], true);
+    ], { zero: true, unit: "W", xTicks });
   } catch (e) { /* ignore */ }
 }
 
@@ -209,21 +215,34 @@ function renderCatChips() {
       <span class="dot" style="background:${on ? c.color : "transparent"};border-color:${c.color}"></span>${c.label}</button>`;
   }).join("");
 }
-function drawChartX() {
-  const box = document.getElementById("chartx");
-  if (!box || !statsLabels.length) return;
-  const n = statsLabels.length, step = Math.max(1, Math.ceil(n / 8));
-  box.innerHTML = statsLabels.map((l, i) => (i % step === 0 || i === n - 1) ? `<span>${l}</span>` : `<span></span>`).join("");
+let statsSelected = null;
+function xTicksFor(labels) {
+  const step = Math.max(1, Math.ceil(labels.length / 7));
+  return labels.map((l, i) => ({ x: i, label: l, i })).filter(t => t.i % step === 0 || t.i === labels.length - 1);
 }
 function drawStatsChart() {
   const canvas = document.getElementById("statsChart");
   if (!canvas || !statsData || !statsData.length) return;
+  if (statsSelected == null || statsSelected > statsData.length - 1) statsSelected = statsData.length - 1;
   const cats = STAT_CATS.filter(c => !statsOff.has(c.key));
   if (statsChartMode === "line") {
-    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })), false);
+    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })),
+      { unit: "kWh", selected: statsSelected, xTicks: xTicksFor(statsLabels) });
   } else {
-    barChart(canvas, statsData.map(d => cats.map(c => [c.color, c.wh(d)])));
+    barChart(canvas, statsData.map(d => cats.map(c => [c.color, c.wh(d) / 1000])),
+      { unit: "kWh", labels: statsLabels, selected: statsSelected });
   }
+  updateReadout();
+}
+function onStatsSlider(v) { statsSelected = +v; drawStatsChart(); }
+function updateReadout() {
+  const box = document.getElementById("readout");
+  if (!box) return;
+  const d = statsData && statsData[statsSelected];
+  if (!d) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="ro-h">${statsLabels[statsSelected]}</div>` +
+    STAT_CATS.filter(c => !statsOff.has(c.key)).map(c =>
+      `<span class="ro"><span class="dot" style="background:${c.color};border-color:${c.color}"></span>${c.label}: <b>${KWH(c.wh(d))}</b></span>`).join("");
 }
 
 async function renderStats() {
@@ -231,11 +250,12 @@ async function renderStats() {
   const s = await api(`stats?from=${w.from}&to=${w.to}&bucket=${w.bucket}&label=${encodeURIComponent(w.label)}`);
   statsData = s.buckets.map(b => b.energy);
   statsLabels = s.buckets.map(b => b.label);
+  statsSelected = null;
   const t = s.total;
   let html = `<div class="card"><div class="chips">`;
   for (const [m, lbl] of [["day", "Tag"], ["week", "Woche"], ["month", "Monat"], ["year", "Jahr"], ["custom", "Eigen"]])
     html += `<button class="sec ${statsView.mode === m ? "on" : ""}" onclick="setMode('${m}')">${lbl}</button>`;
-  html += `</div>`;
+  html += `</div><div style="margin-top:8px"><button class="sec" onclick="sinceLastReading()">seit letztem Ablesen</button></div>`;
   if (statsView.mode === "custom") {
     html += `<div style="margin-top:8px"><label class="field">von</label><input type="date" id="cfrom" value="${fmtMs(s.fromMs)}">
       <label class="field">bis</label><input type="date" id="cto" value="${fmtMs(s.toMs - 1)}">
@@ -269,8 +289,9 @@ async function renderStats() {
         <button class="sec ${statsChartMode === "line" ? "on" : ""}" onclick="setChartMode('line')">Linie</button></div>
       <div id="catChips" class="chips"></div>
       <canvas id="statsChart"></canvas>
-      <div class="chartx" id="chartx"></div>
-      <div class="note">Kategorien antippen zum Ein- und Ausblenden. Werte in kWh.</div></div>`;
+      <input type="range" min="0" max="${Math.max(0, statsData.length - 1)}" value="${statsData.length - 1}" oninput="onStatsSlider(this.value)" style="width:100%">
+      <div id="readout" class="readout"></div>
+      <div class="note">Regler ziehen für einen Zeitpunkt. Kategorien antippen zum Ein-/Ausblenden. Werte in kWh.</div></div>`;
   } else {
     html += `<div class="card"><div class="note">Für diesen Zeitraum liegen noch keine Daten vor.</div></div>`;
   }
@@ -293,7 +314,15 @@ async function renderStats() {
     <button class="primary" onclick="saveMeter()">Eintragen</button></div>`;
 
   document.getElementById("stats").innerHTML = html;
-  renderCatChips(); drawStatsChart(); drawChartX();
+  renderCatChips(); drawStatsChart();
+}
+
+function sinceLastReading() {
+  const ms = lastState && lastState.lastMeterReadingMs;
+  if (!ms) { toast("Noch keine Ablesung eingetragen"); return; }
+  statsView.mode = "custom"; localStorage.setItem("statsMode", "custom");
+  statsView.from = fmtMs(ms); statsView.to = fmt(new Date());
+  renderStats();
 }
 
 async function saveMeter() {
@@ -377,43 +406,88 @@ async function saveSettings() {
 const v = (id) => document.getElementById(id).value;
 
 // ---- charts ----
-function lineChart(canvas, series, zero) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = 160;
+const CHART_H = 180, PAD_L = 46, PAD_B = 18, PAD_T = 8;
+function axisFmt(v) {
+  const a = Math.abs(v);
+  if (a >= 1000) return (v / 1000).toFixed(a >= 10000 ? 0 : 1).replace(".", ",") + "k";
+  if (a >= 10 || v === 0) return String(Math.round(v));
+  return v.toFixed(1).replace(".", ",");
+}
+function axisTicks(min, max) {
+  if (min === max) max = min + 1;
+  return [min, (min + max) / 2, max];
+}
+function chartSetup(canvas) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = CHART_H;
   canvas.width = w * dpr; canvas.height = h * dpr;
   const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h, L: PAD_L, R: w - 8, T: PAD_T, B: h - PAD_B };
+}
+function drawYAxis(ctx, g, minY, maxY, Y, unit) {
+  const muted = getComputedStyle(document.body).getPropertyValue("--muted") || "#888";
+  ctx.font = "10px system-ui"; ctx.fillStyle = muted;
+  ctx.strokeStyle = "rgba(128,128,128,.18)"; ctx.lineWidth = 1;
+  for (const tv of axisTicks(minY, maxY)) {
+    const yy = Y(tv);
+    ctx.beginPath(); ctx.moveTo(g.L, yy); ctx.lineTo(g.R, yy); ctx.stroke();
+    ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.fillText(axisFmt(tv), g.L - 4, yy);
+  }
+  if (unit) { ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(unit, 2, 0); }
+}
+function drawXLabels(ctx, g, ticks) {
+  const muted = getComputedStyle(document.body).getPropertyValue("--muted") || "#888";
+  ctx.fillStyle = muted; ctx.font = "10px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (const t of ticks) ctx.fillText(t.label, t.px, g.B + 3);
+}
+
+// series: [{color, points:[[x,y]]}]; opts: {zero, unit, xTicks:[{x,label}], selected (x value)}
+function lineChart(canvas, series, opts = {}) {
+  const { zero = false, unit = "", xTicks = null, selected = null } = opts;
+  const g = chartSetup(canvas); const { ctx } = g;
   const all = series.flatMap(s => s.points);
-  if (all.length < 2) return;
+  if (!all.length) return;
   const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
-  let minX = Math.min(...xs), maxX = Math.max(...xs);
-  let minY = Math.min(...ys), maxY = Math.max(...ys);
+  let minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   if (zero) { minY = Math.min(minY, 0); maxY = Math.max(maxY, 0); }
-  if (maxY - minY < 1) maxY = minY + 1; if (maxX === minX) maxX = minX + 1;
-  const X = (x) => (x - minX) / (maxX - minX) * w;
-  const Y = (y) => h - (y - minY) / (maxY - minY) * h;
-  if (zero) { ctx.strokeStyle = "rgba(128,128,128,.4)"; ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(w, Y(0)); ctx.stroke(); }
+  if (maxY - minY < 0.001) maxY = minY + 1; if (maxX === minX) maxX = minX + 1;
+  const X = (x) => g.L + (x - minX) / (maxX - minX) * (g.R - g.L);
+  const Y = (y) => g.B - (y - minY) / (maxY - minY) * (g.B - g.T);
+  drawYAxis(ctx, g, minY, maxY, Y, unit);
+  if (zero) { ctx.strokeStyle = "rgba(128,128,128,.4)"; ctx.beginPath(); ctx.moveTo(g.L, Y(0)); ctx.lineTo(g.R, Y(0)); ctx.stroke(); }
+  if (selected != null) {
+    const sx = X(selected); ctx.strokeStyle = "rgba(128,128,128,.6)"; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(sx, g.T); ctx.lineTo(sx, g.B); ctx.stroke(); ctx.setLineDash([]);
+  }
   for (const s of series) {
+    if (s.points.length === 1) { ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(X(s.points[0][0]), Y(s.points[0][1]), 3, 0, 7); ctx.fill(); continue; }
     if (s.points.length < 2) continue;
     ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
-    s.points.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])));
-    ctx.stroke();
+    s.points.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))); ctx.stroke();
+    if (selected != null) { const pt = s.points.find(p => p[0] === selected); if (pt) { ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(X(selected), Y(pt[1]), 3.5, 0, 7); ctx.fill(); } }
   }
+  if (xTicks) drawXLabels(ctx, g, xTicks.map(t => ({ px: X(t.x), label: t.label })));
 }
-function barChart(canvas, groups) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = 160;
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+
+// groups: [[ [color,value] ]]; opts: {unit, labels:[string], selected (group index)}
+function barChart(canvas, groups, opts = {}) {
+  const { unit = "", labels = null, selected = null } = opts;
+  const g = chartSetup(canvas); const { ctx } = g;
+  if (!groups.length) return;
   const max = Math.max(0.001, ...groups.flat().map(b => b[1]));
-  const gw = w / groups.length;
+  const Y = (v) => g.B - v / max * (g.B - g.T);
+  drawYAxis(ctx, g, 0, max, Y, unit);
+  const gw = (g.R - g.L) / groups.length;
   groups.forEach((bars, gi) => {
-    const bw = gw * 0.8 / bars.length;
-    bars.forEach((b, bi) => {
-      const bh = b[1] / max * h;
-      ctx.fillStyle = b[0];
-      ctx.fillRect(gi * gw + gw * 0.1 + bi * bw, h - bh, bw * 0.9, bh);
-    });
+    if (selected === gi) { ctx.fillStyle = "rgba(128,128,128,.14)"; ctx.fillRect(g.L + gi * gw, g.T, gw, g.B - g.T); }
+    const bw = gw * 0.8 / Math.max(1, bars.length);
+    bars.forEach((b, bi) => { ctx.fillStyle = b[0]; ctx.fillRect(g.L + gi * gw + gw * 0.1 + bi * bw, Y(b[1]), bw * 0.9, g.B - Y(b[1])); });
   });
+  if (labels) {
+    const step = Math.max(1, Math.ceil(groups.length / 7));
+    const ticks = labels.map((l, i) => ({ px: g.L + i * gw + gw / 2, label: l, i }))
+      .filter(t => t.i % step === 0 || t.i === labels.length - 1);
+    drawXLabels(ctx, g, ticks);
+  }
 }
 
 // ---- token ----
