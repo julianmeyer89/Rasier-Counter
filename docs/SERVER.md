@@ -118,3 +118,34 @@ sudo journalctl -u rasier -f     # Log ansehen
 
 Der Server ist noch nicht an echten Geräten getestet (Firmware B2500 V110.9, CT002 124). Der erste
 Lauf zeigt, ob die Cloud die erwarteten Werte liefert; Abweichungen bitte melden.
+
+## Wartung automatisieren (optional, empfohlen)
+
+Damit du dich um nichts mehr kümmern musst, richtet ein Skript automatische OS-Updates (inkl.
+nächtlichem Neustart), automatische App-Updates mit Gesundheitscheck und Rollback, sowie einen
+Marstek-Zertifikat-Wächter ein. Einmalig auf der VM:
+
+```
+cd ~/rasier/src && git pull
+sudo bash deploy/install-automation.sh
+```
+
+Das richtet ein:
+- **Automatische Sicherheitsupdates** von Ubuntu, bei Bedarf Neustart um 04:00 (Dienst startet danach von allein).
+- **rasier-update.timer** (täglich 03:30): holt neue Versionen, testet und baut sie, startet nur bei
+  erfolgreichem Bau neu und macht bei Fehlern automatisch einen Rollback auf die vorige Version.
+- **rasier-certwatch.timer** (alle 30 min): erkennt, wenn die Cloud-Verbindung wegen eines
+  getauschten Marstek-Zertifikats abbricht, holt automatisch das aktuelle hame-relay-Image, zieht das
+  neue Zertifikat und startet neu (mit 6-Stunden-Cooldown gegen wiederholte Versuche).
+
+Prüfen/ansehen:
+```
+systemctl list-timers | grep rasier
+journalctl -u rasier-update -n 30 --no-pager
+journalctl -u rasier-certwatch -n 30 --no-pager
+```
+
+Rückgängig machen:
+```
+sudo systemctl disable --now rasier-update.timer rasier-certwatch.timer
+```
