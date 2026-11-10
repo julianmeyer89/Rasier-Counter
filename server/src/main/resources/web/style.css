@@ -47,6 +47,9 @@ main { max-width: 760px; margin: 0 auto; padding: 8px; }
 .card h2 { margin: 0 0 10px; font-size: 1rem; font-weight: 600; }
 .row { display: flex; justify-content: space-between; padding: 4px 0; gap: 8px; }
 .row .label { color: var(--muted); }
+.subhead { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 0 2px; font-weight: 600; }
+.row.sub .label { padding-left: 14px; position: relative; }
+.row.sub .label::before { content: "·"; position: absolute; left: 4px; }
 .row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
 .big-row { display: flex; justify-content: space-around; text-align: center; margin: 6px 0 14px; }
 .big { display: flex; flex-direction: column; }

@@ -43,6 +43,10 @@ const chargeModeLabel = (m) => ({ SIMULTANEOUS: "gleichzeitig laden/entladen", C
 function row(label, value, cls) {
   return `<div class="row"><span class="label">${label}</span><span class="value ${cls || ""}">${value}</span></div>`;
 }
+function subRow(label, value, cls) {
+  return `<div class="row sub"><span class="label">${label}</span><span class="value ${cls || ""}">${value}</span></div>`;
+}
+function subhead(text) { return `<div class="subhead">${text}</div>`; }
 
 // Card header with an "i" button that opens the explanation window.
 function cardHead(title) {
@@ -96,10 +100,12 @@ function renderOverview(s) {
     const t = s.today;
     html += `<div class="card">${cardHead("Heute")}
       ${row("Ersparnis", EUR(t.savingsEuro), "battery")}
-      ${row("Solarertrag", KWH(t.pvWh), "solar")}
-      ${row("Selbst genutzt", KWH(t.selfConsumedWh))}
+      ${subhead("Verbrauch")}
       ${row("Hausverbrauch", KWH(t.houseWh))}
-      ${row("Netzbezug", KWH(t.gridImportWh), "import")}
+      ${subRow("davon Solar", KWH(t.selfConsumedWh), "battery")}
+      ${subRow("aus dem Netz", KWH(t.gridImportWh), "import")}
+      ${subhead("Erzeugung")}
+      ${row("Solarertrag", KWH(t.pvWh), "solar")}
       ${row("Einspeisung", KWH(t.gridExportWh), "export")}
       ${row("Autarkie", PCT(t.autarkyPercent))}
     </div>`;
@@ -322,7 +328,17 @@ async function renderStats() {
     html += `<div class="card"><div class="note">Für diesen Zeitraum liegen noch keine Daten vor.</div></div>`;
   }
 
-  html += `<div class="card">${cardHead("Summe")}<div class="note" style="margin-top:-4px;margin-bottom:6px">Zeitraum: ${w.label}</div>${STAT_CATS.map(c => row(c.label, KWH(c.wh(t)))).join("")}${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
+  html += `<div class="card">${cardHead("Summe")}
+    <div class="note" style="margin-top:-4px;margin-bottom:6px">Zeitraum: ${w.label}</div>
+    ${subhead("Verbrauch")}
+    ${row("Hausverbrauch", KWH(t.houseWh))}
+    ${subRow("davon Solar", KWH(t.selfConsumedWh), "battery")}
+    ${subRow("aus dem Netz", KWH(t.gridImportWh), "import")}
+    ${subhead("Erzeugung")}
+    ${row("Solarertrag", KWH(t.pvWh), "solar")}
+    ${row("Einspeisung", KWH(t.gridExportWh), "export")}
+    ${row("Ersparnis", EUR(t.savingsEuro), "battery")}
+    ${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
 
   if (s.meterPeriods && s.meterPeriods.length) {
     html += `<div class="card"><h2>Ablesungen im Zeitraum</h2>`;
