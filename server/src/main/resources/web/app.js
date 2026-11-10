@@ -44,6 +44,31 @@ function row(label, value, cls) {
   return `<div class="row"><span class="label">${label}</span><span class="value ${cls || ""}">${value}</span></div>`;
 }
 
+// Card header with an "i" button that opens the explanation window.
+function cardHead(title) {
+  return `<div class="cardhead"><h2>${title}</h2><button class="infobtn" onclick="openInfo()" title="Erklärung">i</button></div>`;
+}
+
+const VALUE_INFO = `
+<p class="note">Ohne DTU sind einige Werte geschätzt. Die exakten Netzwerte stehen in „Zählerbasiert“, sobald zwei Ablesungen vorliegen.</p>
+<table class="info-table">
+  <tr><th>Wert</th><th>Bedeutung</th></tr>
+  <tr><td>Solarertrag</td><td>Energie, die die PV-Module erzeugt haben (Summe der PV-Eingänge der Speicher).</td></tr>
+  <tr><td>Speicherabgabe</td><td>Energie, die die Speicher an den Wechselrichter abgegeben haben. Bei diesem Aufbau fast gleich dem Solarertrag.</td></tr>
+  <tr><td>Hausverbrauch</td><td>Gesamtverbrauch des Hauses = Netzbezug − Einspeisung + Wechselrichter-Abgabe.</td></tr>
+  <tr><td>Eigenverbrauch</td><td>Solarstrom, den das Haus selbst genutzt hat (nicht eingespeist). Grundlage der Ersparnis.</td></tr>
+  <tr><td>Netzbezug</td><td>Aus dem Netz gekaufter Strom.</td></tr>
+  <tr><td>Einspeisung</td><td>Ins Netz abgegebener Strom.</td></tr>
+  <tr><td>Autarkie</td><td>Anteil des Hausverbrauchs, der aus eigenem Solar kam (Eigenverbrauch ÷ Hausverbrauch).</td></tr>
+</table>
+<p class="note">Zusammenhang: Hausverbrauch = Eigenverbrauch + Netzbezug.</p>`;
+
+function openInfo() {
+  document.getElementById("infoBody").innerHTML = VALUE_INFO;
+  document.getElementById("infoOverlay").classList.remove("hidden");
+}
+function closeInfo() { document.getElementById("infoOverlay").classList.add("hidden"); }
+
 function renderOverview(s) {
   const g = s.group;
   const gridCls = g.gridW == null ? "" : g.gridW < 0 ? "export" : "import";
@@ -69,7 +94,7 @@ function renderOverview(s) {
   </div>`;
   if (s.today) {
     const t = s.today;
-    html += `<div class="card"><h2>Heute</h2>
+    html += `<div class="card">${cardHead("Heute")}
       ${row("Ersparnis", EUR(t.savingsEuro), "battery")}
       ${row("Solarertrag", KWH(t.pvWh), "solar")}
       ${row("Selbst genutzt", KWH(t.selfConsumedWh))}
@@ -296,7 +321,7 @@ async function renderStats() {
     html += `<div class="card"><div class="note">Für diesen Zeitraum liegen noch keine Daten vor.</div></div>`;
   }
 
-  html += `<div class="card"><h2>Summe</h2>${STAT_CATS.map(c => row(c.label, KWH(c.wh(t)))).join("")}${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
+  html += `<div class="card">${cardHead("Summe")}<div class="note" style="margin-top:-4px;margin-bottom:6px">Zeitraum: ${w.label}</div>${STAT_CATS.map(c => row(c.label, KWH(c.wh(t)))).join("")}${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
 
   if (s.meterPeriods && s.meterPeriods.length) {
     html += `<div class="card"><h2>Ablesungen im Zeitraum</h2>`;
