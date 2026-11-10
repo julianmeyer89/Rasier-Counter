@@ -28,12 +28,16 @@ object CloudPayloads {
         val soc = fields.int("pe") ?: return null
         val vv = fields["vv"]
         val sv = fields["sv"]
+        // `kn` is the currently stored energy (Wh), not the total capacity. Derive the full capacity
+        // from it and the state of charge (kn / soc * 100).
+        val remainingWh = fields.int("kn")
+        val capacityWh = if (remainingWh != null && soc in 1..100) Math.round(remainingWh * 100.0 / soc).toInt() else null
         return BatteryState(
             id = id,
             name = name,
             timestampMs = timestampMs,
             socPercent = soc,
-            capacityWh = fields.int("kn"),
+            capacityWh = capacityWh,
             pvInputW = listOfNotNull(fields.int("w1"), fields.int("w2")),
             outputW = listOfNotNull(fields.int("g1"), fields.int("g2")),
             outputEnabled = listOf(fields.bool("o1"), fields.bool("o2")),

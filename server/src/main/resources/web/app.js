@@ -104,7 +104,7 @@ function renderBatteries(s) {
       ${b.capacityWh != null ? row("Gespeichert", KWH(b.capacityWh * b.socPercent / 100)) : ""}
       ${b.pvInputW.map((w, i) => row("PV-Eingang " + (i + 1), W(w), "solar")).join("")}
       ${b.outputW.map((w, i) => row("Ausgang " + (i + 1) + (b.outputEnabled[i] === false ? " (aus)" : ""), W(w))).join("")}
-      ${row("Entladetiefe (DoD)", b.dodPercent != null ? b.dodPercent + " % (bis " + (100 - b.dodPercent) + " %)" : "–")}
+      ${row("Entladetiefe (DoD)", b.dodPercent != null ? b.dodPercent + " % (Mindestladestand " + (100 - b.dodPercent) + " %)" : "–")}
       ${row("Lademodus", chargeModeLabel(b.chargeMode))}
       ${row("Adaptiver Modus", b.adaptiveMode == null ? "–" : b.adaptiveMode ? "an" : "aus")}
       ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh)) : ""}
@@ -112,8 +112,8 @@ function renderBatteries(s) {
       ${row("Firmware", b.firmware || "–")}
       ${row("Aktualisiert", ago(Date.now() - b.ageSeconds * 1000))}
       <div style="height:10px"></div>
-      <label class="field">Entladetiefe: <b id="dodv-${b.id}">${b.dodPercent || 90}</b> %</label>
-      <input type="range" min="10" max="100" value="${b.dodPercent || 90}" oninput="document.getElementById('dodv-${b.id}').textContent=this.value" id="dod-${b.id}">
+      <label class="field">Entladetiefe: <b id="dodv-${b.id}">${b.dodPercent ?? 90}</b> % → entlädt bis <b>${100 - (b.dodPercent ?? 90)} %</b> Ladestand</label>
+      <input type="range" min="0" max="100" value="${b.dodPercent ?? 90}" oninput="document.getElementById('dodv-${b.id}').textContent=this.value" id="dod-${b.id}">
       <button class="sec" onclick="sendCmd('${b.id}','dod',+document.getElementById('dod-${b.id}').value)">DoD setzen</button>
       <button class="sec" onclick="sendCmd('${b.id}','chargeMode', ${b.chargeMode === "CHARGE_THEN_DISCHARGE" ? 0 : 1})">Lademodus wechseln</button>
       ${b.adaptiveMode === false ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',1)">Adaptiven Modus an</button>` : ""}

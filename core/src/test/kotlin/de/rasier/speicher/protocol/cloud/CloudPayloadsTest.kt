@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 
 class CloudPayloadsTest {
     private val runtime =
-        "p1=0,p2=0,w1=120,w2=95,pe=65,vv=110,sv=9,cs=0,cd=0,am=0,o1=1,o2=1,do=90,lv=200,cj=1,kn=2240," +
+        "p1=0,p2=0,w1=120,w2=95,pe=65,vv=110,sv=9,cs=0,cd=0,am=0,o1=1,o2=1,do=90,lv=200,cj=1,kn=1456," +
             "g1=96,g2=99,b1=0,b2=0,md=0,d1=1,e1=0:0,f1=24:0,h1=200,sg=1,sp=100,st=0,tl=26,th=28,tc=0,tf=0," +
             "pt=1530,bs=640,tc_dis=0,lmo=800,lmi=800,lmf=0,ws=-62"
 
