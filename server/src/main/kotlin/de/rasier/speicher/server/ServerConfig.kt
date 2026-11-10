@@ -28,6 +28,8 @@ data class ServerConfig(
     val cloudHttpIntervalSeconds: Int,
     val automationsMayWrite: Boolean,
     val useNoFlashCommands: Boolean,
+    /** Log the raw cloud payloads for diagnosis. */
+    val debug: Boolean,
     val tariff: Tariff,
     val system: SystemConfig,
     val automation: AutomationSettings,
@@ -64,6 +66,7 @@ data class ServerConfig(
                 cloudHttpIntervalSeconds = int("cloud_http_interval_seconds", 300),
                 automationsMayWrite = bool("automations_may_write", false),
                 useNoFlashCommands = bool("use_no_flash_commands", false),
+                debug = bool("debug", false),
                 tariff = Tariff(
                     importCentPerKwh = dbl("import_cent_per_kwh", 30.0),
                     feedInCentPerKwh = dbl("feed_in_cent_per_kwh", 0.0),

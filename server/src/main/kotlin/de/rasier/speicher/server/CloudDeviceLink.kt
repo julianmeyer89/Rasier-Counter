@@ -112,6 +112,7 @@ class CloudDeviceLink(
         for (d in devices) {
             val entry = latest[d.topics.status] ?: continue
             if (nowMs - entry.second > STALE_MS) continue
+            if (config.debug) log("ROH ${d.name}: ${entry.first}")
             val fields = CloudPayloads.parseFields(entry.first)
             if (d.isBattery) {
                 CloudPayloads.parseBattery(fields, d.devid, d.name, d.type, entry.second)?.let { batteries += it }

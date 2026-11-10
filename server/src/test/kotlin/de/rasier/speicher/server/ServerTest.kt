@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 private fun demoConfig(dir: File, write: Boolean = true) = ServerConfig(
     demo = true, cloudBaseUrl = "", email = "", passwordMd5 = "", certDir = "certs", brokerUrl = null,
     dataDir = dir.path, webPort = 0, authToken = "", pollIntervalSeconds = 30, cloudHttpIntervalSeconds = 300,
-    automationsMayWrite = write, useNoFlashCommands = false,
+    automationsMayWrite = write, useNoFlashCommands = false, debug = false,
     tariff = Tariff(30.0, 8.0), system = SystemConfig(),
     automation = AutomationSettings(calibration = CalibrationSettings(holdFullMinutes = 30, holdEmptyMinutes = 10, intervalDays = 0)),
 )
