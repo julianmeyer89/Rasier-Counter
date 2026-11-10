@@ -152,9 +152,54 @@ async function loadHistory() {
   } catch (e) { /* ignore */ }
 }
 
+// Energy categories for the statistics chart. key -> {label, color, wh(day), eur?}
+const STAT_CATS = [
+  { key: "pv", label: "Solarertrag", color: COL.solar, wh: (d) => d.pvWh },
+  { key: "house", label: "Hausverbrauch", color: "#6a7bd0", wh: (d) => d.houseWh },
+  { key: "self", label: "Eigenverbrauch", color: COL.battery, wh: (d) => d.selfConsumedWh },
+  { key: "import", label: "Netzbezug", color: COL.import, wh: (d) => d.gridImportWh },
+  { key: "export", label: "Einspeisung", color: COL.export, wh: (d) => d.gridExportWh },
+  { key: "battery", label: "Speicherabgabe", color: "#00897b", wh: (d) => d.batteryOutputWh },
+];
+let statsData = null;
+let statsChartMode = localStorage.getItem("statsChartMode") || "bar";
+let statsOff = new Set(JSON.parse(localStorage.getItem("statsOff") || "[]"));
+
+function statsPersist() {
+  localStorage.setItem("statsOff", JSON.stringify([...statsOff]));
+  localStorage.setItem("statsChartMode", statsChartMode);
+}
+function toggleCat(key) {
+  if (statsOff.has(key)) statsOff.delete(key); else statsOff.add(key);
+  statsPersist(); drawStatsChart(); renderCatChips();
+}
+function setChartMode(m) { statsChartMode = m; statsPersist(); renderStats(); }
+
+function renderCatChips() {
+  const box = document.getElementById("catChips");
+  if (!box) return;
+  box.innerHTML = STAT_CATS.map(c => {
+    const on = !statsOff.has(c.key);
+    return `<button class="chip ${on ? "on" : ""}" style="${on ? `--c:${c.color}` : ""}" onclick="toggleCat('${c.key}')">
+      <span class="dot" style="background:${on ? c.color : "transparent"};border-color:${c.color}"></span>${c.label}</button>`;
+  }).join("");
+}
+
+function drawStatsChart() {
+  const canvas = document.getElementById("statsChart");
+  if (!canvas || !statsData || !statsData.length) return;
+  const cats = STAT_CATS.filter(c => !statsOff.has(c.key));
+  if (statsChartMode === "line") {
+    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })), false, statsData.length);
+  } else {
+    barChart(canvas, statsData.map(d => cats.map(c => [c.color, c.wh(d)])));
+  }
+}
+
 async function renderStats() {
   const s = await api(`stats?days=${statsDays}&label=${statsDays} Tage`);
   const t = s.total;
+  statsData = s.days;
   let html = `<div class="card"><div>`;
   for (const [d, lbl] of [[7, "7 Tage"], [30, "30 Tage"], [365, "Jahr"]]) {
     html += `<button class="sec ${statsDays === d ? "on" : ""}" onclick="statsDays=${d};renderStats()">${lbl}</button>`;
@@ -166,16 +211,23 @@ async function renderStats() {
       <div class="big"><span class="v import">${EUR(t.gridCostEuro)}</span><span class="l">Netzkosten</span></div>
       <div class="big"><span class="v">${PCT(t.autarkyPercent)}</span><span class="l">Autarkie</span></div>
     </div></div>`;
-  html += `<div class="card"><h2>Energie ${t.date}</h2>
-    ${row("Solarertrag", KWH(t.pvWh), "solar")}
-    ${row("Hausverbrauch", KWH(t.houseWh))}
-    ${row("davon Solar", KWH(t.selfConsumedWh), "battery")}
-    ${row("Netzbezug", KWH(t.gridImportWh), "import")}
-    ${row("Einspeisung", KWH(t.gridExportWh), "export")}</div>`;
+
   if (s.days.length) {
-    html += `<div class="card"><h2>Tageswerte</h2><canvas id="barChart"></canvas>
-      <div class="legend"><span style="color:${COL.battery}">Solar genutzt</span><span style="color:${COL.import}">Bezug</span><span style="color:${COL.export}">Einspeisung</span></div></div>`;
+    html += `<div class="card"><h2>Diagramm</h2>
+      <div style="margin-bottom:8px">
+        <button class="sec ${statsChartMode === "bar" ? "on" : ""}" onclick="setChartMode('bar')">Balken</button>
+        <button class="sec ${statsChartMode === "line" ? "on" : ""}" onclick="setChartMode('line')">Linie</button>
+      </div>
+      <div id="catChips" class="chips"></div>
+      <canvas id="statsChart"></canvas>
+      <div class="note">Kategorien antippen zum Ein- und Ausblenden. ${s.days.length} Tag(e), kWh.</div>
+    </div>`;
   }
+
+  html += `<div class="card"><h2>Summe ${t.date}</h2>
+    ${STAT_CATS.map(c => row(c.label, KWH(c.wh(t)))).join("")}
+    ${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
+
   if (s.meterPeriods && s.meterPeriods.length) {
     html += `<div class="card"><h2>Zählerstand-Zeiträume</h2>`;
     for (const p of s.meterPeriods.slice(0, 8)) {
@@ -190,11 +242,8 @@ async function renderStats() {
     <label class="field">Einspeisung 2.8.0 (kWh, optional)</label><input id="mExport" type="number" step="0.1">
     <button class="primary" onclick="saveMeter()">Eintragen</button></div>`;
   document.getElementById("stats").innerHTML = html;
-  if (s.days.length) {
-    barChart(document.getElementById("barChart"), s.days.map(d => [
-      [COL.battery, d.selfConsumedWh], [COL.import, d.gridImportWh], [COL.export, d.gridExportWh],
-    ]));
-  }
+  renderCatChips();
+  drawStatsChart();
 }
 
 async function saveMeter() {
