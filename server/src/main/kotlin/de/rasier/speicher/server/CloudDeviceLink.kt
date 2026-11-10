@@ -62,6 +62,7 @@ class CloudDeviceLink(
             File(config.certDir, "ca.crt"),
             File(config.certDir, "client.crt"),
             File(config.certDir, "client.key"),
+            extraTrustFiles = listOf(File(config.certDir, "broker.crt")),
         )
         val (host, port) = brokerHostPort()
         val c = Mqtt3Client.builder()

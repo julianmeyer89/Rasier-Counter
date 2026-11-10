@@ -27,16 +27,22 @@ object TlsFactory {
 
     data class Material(val keyManagerFactory: KeyManagerFactory, val trustManagerFactory: TrustManagerFactory)
 
-    fun load(caFile: File, certFile: File, keyFile: File): Material {
+    /**
+     * Builds the TLS material. The trust store contains Marstek's CA plus any extra certificate
+     * files in [extraTrustFiles] — used to pin the broker's own server certificate, which does not
+     * chain to a public CA. We authenticate to the broker with the client certificate.
+     */
+    fun load(caFile: File, certFile: File, keyFile: File, extraTrustFiles: List<File> = emptyList()): Material {
         val caCerts = readCertificates(caFile)
         val clientCerts = readCertificates(certFile)
         val privateKey = readPrivateKey(keyFile)
-        require(caCerts.isNotEmpty()) { "Keine CA in ${caFile.name}" }
         require(clientCerts.isNotEmpty()) { "Kein Client-Zertifikat in ${certFile.name}" }
 
+        val trusted = caCerts + extraTrustFiles.filter { it.exists() }.flatMap { readCertificates(it) }
+        require(trusted.isNotEmpty()) { "Keine vertrauenswürdigen Zertifikate (ca.crt bzw. broker.crt fehlen)" }
         val trustStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
             load(null, null)
-            caCerts.forEachIndexed { i, c -> setCertificateEntry("ca$i", c) }
+            trusted.forEachIndexed { i, c -> setCertificateEntry("trust$i", c) }
         }
         val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(trustStore) }
 
