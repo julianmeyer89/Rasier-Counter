@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlin.math.roundToInt
@@ -166,19 +167,83 @@ class ServerHub(
 
     fun events(): List<EventDto> = events.takeLast(100).reversed().map { EventDto(it.t, it.text) }
 
-    fun stats(periodDays: Long, label: String): StatsDto {
-        val from = LocalDate.now(zone).minusDays(periodDays - 1).toString()
-        val days = integrator.totals.values.filter { it.date >= from }.sortedBy { it.date }
-        val total = days.sum(label)
-        val periods = MeterEvaluation.periods(meterEntries, deviceDays, config.system.inverterEfficiency, zone).reversed()
+    enum class Bucket { HOUR, DAY, MONTH }
+
+    /**
+     * Statistics for the window [from, to] (inclusive dates), aggregated into [bucket] buckets.
+     * HOUR buckets come from the recent power history (only for the last ~2 days); DAY and MONTH
+     * buckets from the stored daily totals. The total and the meter-based total match the window.
+     */
+    fun stats(from: LocalDate, to: LocalDate, bucket: Bucket, label: String): StatsDto {
+        val fromMs = from.atStartOfDay(zone).toInstant().toEpochMilli()
+        val toMs = to.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+
+        val buckets: List<Pair<String, DailyEnergy>> = when (bucket) {
+            Bucket.HOUR -> hourlyBuckets(from)
+            Bucket.DAY -> daysIn(from, to).map { it.date.substring(5) to it }
+            Bucket.MONTH -> daysIn(from, to).groupBy { it.date.substring(0, 7) }
+                .toSortedMap().map { (ym, list) -> ym to list.sum(ym) }
+        }
+        val total = buckets.map { it.second }.fold(DailyEnergy(date = label)) { a, b -> a + b }.copy(date = label)
+
+        val allPeriods = MeterEvaluation.periods(meterEntries, deviceDays, config.system.inverterEfficiency, zone)
+        val inWindow = allPeriods.filter { it.toMs > fromMs && it.fromMs < toMs }.reversed()
+        val meterTotal = meterTotalFor(fromMs, toMs)
+
         return StatsDto(
-            period = label,
+            label = label,
+            fromMs = fromMs,
+            toMs = toMs,
+            bucket = bucket.name,
             total = EnergyDto.from(total, config.tariff),
-            days = days.map { EnergyDto.from(it, config.tariff) },
-            meterPeriods = periods.map {
+            buckets = buckets.map { BucketDto(it.first, EnergyDto.from(it.second, config.tariff)) },
+            meterPeriods = inWindow.map {
+                MeterPeriodDto(it.fromMs, it.toMs, it.importKwh, it.exportKwh, it.houseKwh, it.selfConsumedKwh, it.savingsEuro(config.tariff), it.importPerWeekKwh)
+            },
+            meterTotal = meterTotal?.let {
                 MeterPeriodDto(it.fromMs, it.toMs, it.importKwh, it.exportKwh, it.houseKwh, it.selfConsumedKwh, it.savingsEuro(config.tariff), it.importPerWeekKwh)
             },
         )
+    }
+
+    private fun daysIn(from: LocalDate, to: LocalDate): List<DailyEnergy> =
+        integrator.totals.values.filter { it.date >= from.toString() && it.date <= to.toString() }.sortedBy { it.date }
+
+    /** Hourly buckets of one day, integrated from the power history (only available for recent days). */
+    private fun hourlyBuckets(day: LocalDate): List<Pair<String, DailyEnergy>> {
+        val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
+        val eff = config.system.inverterEfficiency
+        val cap = config.system.inverterMaxW.toDouble()
+        val buckets = Array(24) { DailyEnergy(date = "%02d".format(it)) }
+        for (i in 1 until points.size) {
+            val a = points[i - 1]; val b = points[i]
+            val dt = b.t - a.t
+            if (dt <= 0 || dt > 10 * 60_000L) continue
+            val hour = Instant.ofEpochMilli(a.t).atZone(zone).hour
+            val hours = dt / 3_600_000.0
+            val pvW = (a.pvW + b.pvW) / 2.0
+            val outW = (a.outW + b.outW) / 2.0
+            val acW = (outW * eff).coerceAtMost(cap)
+            val importW = (maxOf(a.gridW ?: 0, 0) + maxOf(b.gridW ?: 0, 0)) / 2.0
+            val exportW = (maxOf(-(a.gridW ?: 0), 0) + maxOf(-(b.gridW ?: 0), 0)) / 2.0
+            val houseW = (importW - exportW + acW).coerceAtLeast(0.0)
+            val selfW = (acW - exportW).coerceAtLeast(0.0)
+            buckets[hour] = buckets[hour] + DailyEnergy(
+                date = buckets[hour].date, pvWh = pvW * hours, batteryOutputWh = outW * hours,
+                inverterAcWh = acW * hours, gridImportWh = importW * hours, gridExportWh = exportW * hours,
+                houseWh = houseW * hours, selfConsumedWh = selfW * hours,
+            )
+        }
+        return buckets.mapIndexed { h, e -> "${"%02d".format(h)}h" to e.copy(date = "${"%02d".format(h)}h") }
+    }
+
+    /** Consumption between the first and last meter reading within the window, or null if < 2. */
+    private fun meterTotalFor(fromMs: Long, toMs: Long): de.rasier.speicher.energy.MeterPeriod? {
+        val inWindow = meterEntries.filter { it.timestampMs >= fromMs - DAY_MS && it.timestampMs <= toMs + DAY_MS }
+            .sortedBy { it.timestampMs }
+        if (inWindow.size < 2) return null
+        return MeterEvaluation.periods(listOf(inWindow.first(), inWindow.last()), deviceDays, config.system.inverterEfficiency, zone).firstOrNull()
     }
 
     // ---- internals ----
@@ -317,5 +382,6 @@ class ServerHub(
         const val MAX_HISTORY = 6_000
         const val MAX_EVENTS = 500
         const val SAVE_INTERVAL_MS = 60_000L
+        const val DAY_MS = 86_400_000L
     }
 }

@@ -115,11 +115,19 @@ data class HistoryDto(val points: List<HistoryPoint>)
 
 @Serializable
 data class StatsDto(
-    val period: String,
+    val label: String,
+    val fromMs: Long,
+    val toMs: Long,
+    val bucket: String,
     val total: EnergyDto,
-    val days: List<EnergyDto>,
+    val buckets: List<BucketDto>,
     val meterPeriods: List<MeterPeriodDto>,
+    /** Meter-reading-based total for the exact window, if readings bracket it (exact grid values). */
+    val meterTotal: MeterPeriodDto?,
 )
+
+@Serializable
+data class BucketDto(val label: String, val energy: EnergyDto)
 
 @Serializable
 data class MeterPeriodDto(
@@ -156,7 +164,7 @@ data class CommandRequest(val batteryId: String, val type: String, val value: In
 data class CalibrationRequest(val batteryIds: List<String> = emptyList())
 
 @Serializable
-data class MeterRequest(val importKwh: Double, val exportKwh: Double? = null)
+data class MeterRequest(val importKwh: Double, val exportKwh: Double? = null, val dateMs: Long? = null)
 
 fun phaseLabel(p: CalibrationPhase): String = when (p) {
     CalibrationPhase.PREPARE -> "Vorbereitung"

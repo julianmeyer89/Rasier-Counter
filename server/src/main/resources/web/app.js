@@ -5,7 +5,7 @@ const COL = {
 };
 let token = localStorage.getItem("token") || "";
 let lastState = null;
-let statsDays = 7;
+let statsView = { mode: localStorage.getItem("statsMode") || "week", anchor: new Date(), from: null, to: null };
 
 // ---- API ----
 async function api(path, opts = {}) {
@@ -162,8 +162,12 @@ const STAT_CATS = [
   { key: "battery", label: "Speicherabgabe", color: "#00897b", wh: (d) => d.batteryOutputWh },
 ];
 let statsData = null;
+let statsLabels = [];
 let statsChartMode = localStorage.getItem("statsChartMode") || "bar";
 let statsOff = new Set(JSON.parse(localStorage.getItem("statsOff") || "[]"));
+const pad = (n) => String(n).padStart(2, "0");
+const fmt = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+const fmtMs = (ms) => fmt(new Date(ms));
 
 function statsPersist() {
   localStorage.setItem("statsOff", JSON.stringify([...statsOff]));
@@ -174,6 +178,27 @@ function toggleCat(key) {
   statsPersist(); drawStatsChart(); renderCatChips();
 }
 function setChartMode(m) { statsChartMode = m; statsPersist(); renderStats(); }
+function setMode(m) { statsView.mode = m; localStorage.setItem("statsMode", m); renderStats(); }
+function applyCustom() { statsView.from = v("cfrom"); statsView.to = v("cto"); renderStats(); }
+function nav(delta) {
+  const a = statsView.anchor;
+  if (statsView.mode === "day") a.setDate(a.getDate() + delta);
+  else if (statsView.mode === "week") a.setDate(a.getDate() + 7 * delta);
+  else if (statsView.mode === "month") a.setMonth(a.getMonth() + delta);
+  else if (statsView.mode === "year") a.setFullYear(a.getFullYear() + delta);
+  statsView.anchor = new Date(a); renderStats();
+}
+function startOfWeek(d) { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+function computeWindow() {
+  const a = statsView.anchor;
+  if (statsView.mode === "day") return { from: fmt(a), to: fmt(a), bucket: "hour", label: a.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short", year: "numeric" }) };
+  if (statsView.mode === "week") { const s = startOfWeek(a), e = new Date(s); e.setDate(s.getDate() + 6); return { from: fmt(s), to: fmt(e), bucket: "day", label: s.toLocaleDateString("de-DE", { day: "numeric", month: "short" }) + "–" + e.toLocaleDateString("de-DE", { day: "numeric", month: "short", year: "numeric" }) }; }
+  if (statsView.mode === "month") { const s = new Date(a.getFullYear(), a.getMonth(), 1), e = new Date(a.getFullYear(), a.getMonth() + 1, 0); return { from: fmt(s), to: fmt(e), bucket: "day", label: a.toLocaleDateString("de-DE", { month: "long", year: "numeric" }) }; }
+  if (statsView.mode === "year") return { from: a.getFullYear() + "-01-01", to: a.getFullYear() + "-12-31", bucket: "month", label: String(a.getFullYear()) };
+  const f = statsView.from || fmt(a), t = statsView.to || fmt(a);
+  const span = (new Date(t) - new Date(f)) / 86400000;
+  return { from: f, to: t, bucket: span > 92 ? "month" : "day", label: f + " – " + t };
+}
 
 function renderCatChips() {
   const box = document.getElementById("catChips");
@@ -184,73 +209,100 @@ function renderCatChips() {
       <span class="dot" style="background:${on ? c.color : "transparent"};border-color:${c.color}"></span>${c.label}</button>`;
   }).join("");
 }
-
+function drawChartX() {
+  const box = document.getElementById("chartx");
+  if (!box || !statsLabels.length) return;
+  const n = statsLabels.length, step = Math.max(1, Math.ceil(n / 8));
+  box.innerHTML = statsLabels.map((l, i) => (i % step === 0 || i === n - 1) ? `<span>${l}</span>` : `<span></span>`).join("");
+}
 function drawStatsChart() {
   const canvas = document.getElementById("statsChart");
   if (!canvas || !statsData || !statsData.length) return;
   const cats = STAT_CATS.filter(c => !statsOff.has(c.key));
   if (statsChartMode === "line") {
-    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })), false, statsData.length);
+    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })), false);
   } else {
     barChart(canvas, statsData.map(d => cats.map(c => [c.color, c.wh(d)])));
   }
 }
 
 async function renderStats() {
-  const s = await api(`stats?days=${statsDays}&label=${statsDays} Tage`);
+  const w = computeWindow();
+  const s = await api(`stats?from=${w.from}&to=${w.to}&bucket=${w.bucket}&label=${encodeURIComponent(w.label)}`);
+  statsData = s.buckets.map(b => b.energy);
+  statsLabels = s.buckets.map(b => b.label);
   const t = s.total;
-  statsData = s.days;
-  let html = `<div class="card"><div>`;
-  for (const [d, lbl] of [[7, "7 Tage"], [30, "30 Tage"], [365, "Jahr"]]) {
-    html += `<button class="sec ${statsDays === d ? "on" : ""}" onclick="statsDays=${d};renderStats()">${lbl}</button>`;
+  let html = `<div class="card"><div class="chips">`;
+  for (const [m, lbl] of [["day", "Tag"], ["week", "Woche"], ["month", "Monat"], ["year", "Jahr"], ["custom", "Eigen"]])
+    html += `<button class="sec ${statsView.mode === m ? "on" : ""}" onclick="setMode('${m}')">${lbl}</button>`;
+  html += `</div>`;
+  if (statsView.mode === "custom") {
+    html += `<div style="margin-top:8px"><label class="field">von</label><input type="date" id="cfrom" value="${fmtMs(s.fromMs)}">
+      <label class="field">bis</label><input type="date" id="cto" value="${fmtMs(s.toMs - 1)}">
+      <button class="primary" onclick="applyCustom()">Anzeigen</button></div>`;
+  } else {
+    html += `<div class="navrow"><button class="ghost" onclick="nav(-1)">◀</button><b>${w.label}</b><button class="ghost" onclick="nav(1)">▶</button></div>`;
   }
-  html += `</div></div>`;
-  html += `<div class="card"><h2>Ersparnis ${t.date}</h2>
-    <div class="big-row">
-      <div class="big"><span class="v battery">${EUR(t.savingsEuro)}</span><span class="l">gespart</span></div>
-      <div class="big"><span class="v import">${EUR(t.gridCostEuro)}</span><span class="l">Netzkosten</span></div>
-      <div class="big"><span class="v">${PCT(t.autarkyPercent)}</span><span class="l">Autarkie</span></div>
-    </div></div>`;
+  html += `</div>`;
 
-  if (s.days.length) {
+  html += `<div class="card"><h2>Ersparnis</h2><div class="big-row">
+    <div class="big"><span class="v battery">${EUR(t.savingsEuro)}</span><span class="l">gespart</span></div>
+    <div class="big"><span class="v import">${EUR(t.gridCostEuro)}</span><span class="l">Netzkosten</span></div>
+    <div class="big"><span class="v">${PCT(t.autarkyPercent)}</span><span class="l">Autarkie</span></div></div></div>`;
+
+  if (s.meterTotal) {
+    const m = s.meterTotal;
+    html += `<div class="card"><h2>Zählerbasiert (exakt)</h2>
+      <div class="note">Aus deinen Zählerständen in diesem Zeitraum berechnet – die genaue Grundlage, nicht geschätzt.</div>
+      ${row("Zeitraum", new Date(m.fromMs).toLocaleDateString("de-DE") + "–" + new Date(m.toMs).toLocaleDateString("de-DE"))}
+      ${row("Netzbezug", KWH(m.importKwh * 1000), "import")}
+      ${m.exportKwh != null ? row("Einspeisung", KWH(m.exportKwh * 1000), "export") : ""}
+      ${m.houseKwh != null ? row("Hausverbrauch", KWH(m.houseKwh * 1000)) : ""}
+      ${m.selfConsumedKwh != null ? row("Eigenverbrauch", KWH(m.selfConsumedKwh * 1000), "battery") : ""}
+      ${m.savingsEuro != null ? row("Ersparnis", EUR(m.savingsEuro), "battery") : ""}</div>`;
+  }
+
+  if (statsData.length) {
     html += `<div class="card"><h2>Diagramm</h2>
       <div style="margin-bottom:8px">
         <button class="sec ${statsChartMode === "bar" ? "on" : ""}" onclick="setChartMode('bar')">Balken</button>
-        <button class="sec ${statsChartMode === "line" ? "on" : ""}" onclick="setChartMode('line')">Linie</button>
-      </div>
+        <button class="sec ${statsChartMode === "line" ? "on" : ""}" onclick="setChartMode('line')">Linie</button></div>
       <div id="catChips" class="chips"></div>
       <canvas id="statsChart"></canvas>
-      <div class="note">Kategorien antippen zum Ein- und Ausblenden. ${s.days.length} Tag(e), kWh.</div>
-    </div>`;
+      <div class="chartx" id="chartx"></div>
+      <div class="note">Kategorien antippen zum Ein- und Ausblenden. Werte in kWh.</div></div>`;
+  } else {
+    html += `<div class="card"><div class="note">Für diesen Zeitraum liegen noch keine Daten vor.</div></div>`;
   }
 
-  html += `<div class="card"><h2>Summe ${t.date}</h2>
-    ${STAT_CATS.map(c => row(c.label, KWH(c.wh(t)))).join("")}
-    ${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
+  html += `<div class="card"><h2>Summe</h2>${STAT_CATS.map(c => row(c.label, KWH(c.wh(t)))).join("")}${row("Autarkie", PCT(t.autarkyPercent))}</div>`;
 
   if (s.meterPeriods && s.meterPeriods.length) {
-    html += `<div class="card"><h2>Zählerstand-Zeiträume</h2>`;
-    for (const p of s.meterPeriods.slice(0, 8)) {
+    html += `<div class="card"><h2>Ablesungen im Zeitraum</h2>`;
+    for (const p of s.meterPeriods.slice(0, 10))
       html += row(new Date(p.fromMs).toLocaleDateString("de-DE") + "–" + new Date(p.toMs).toLocaleDateString("de-DE"),
         KWH(p.importKwh * 1000) + " Bezug" + (p.savingsEuro != null ? " · " + EUR(p.savingsEuro) : ""));
-    }
     html += `</div>`;
   }
+
   html += `<div class="card"><h2>Zählerstand eintragen</h2>
-    <div class="note">Werte vom Stromzähler (Iskra). 1.8.0 = Bezug, 2.8.0 = Einspeisung.</div>
+    <div class="note">Werte vom Stromzähler (Iskra). 1.8.0 = Bezug, 2.8.0 = Einspeisung. Das Ablesedatum ist die Grundlage für die exakte Auswertung.</div>
+    <label class="field">Ablesedatum</label><input id="mDate" type="date" value="${fmtMs(Date.now())}">
     <label class="field">Bezug 1.8.0 (kWh)</label><input id="mImport" type="number" step="0.1">
     <label class="field">Einspeisung 2.8.0 (kWh, optional)</label><input id="mExport" type="number" step="0.1">
     <button class="primary" onclick="saveMeter()">Eintragen</button></div>`;
+
   document.getElementById("stats").innerHTML = html;
-  renderCatChips();
-  drawStatsChart();
+  renderCatChips(); drawStatsChart(); drawChartX();
 }
 
 async function saveMeter() {
-  const imp = parseFloat(document.getElementById("mImport").value);
-  const exp = parseFloat(document.getElementById("mExport").value);
+  const imp = parseFloat(v("mImport"));
+  const exp = parseFloat(v("mExport"));
+  const dateStr = v("mDate");
   if (isNaN(imp)) { toast("Bezug eingeben"); return; }
-  await api("meter", { method: "POST", body: JSON.stringify({ importKwh: imp, exportKwh: isNaN(exp) ? null : exp }) });
+  const dateMs = dateStr ? new Date(dateStr + "T12:00:00").getTime() : Date.now();
+  await api("meter", { method: "POST", body: JSON.stringify({ importKwh: imp, exportKwh: isNaN(exp) ? null : exp, dateMs }) });
   toast("Eingetragen"); renderStats();
 }
 

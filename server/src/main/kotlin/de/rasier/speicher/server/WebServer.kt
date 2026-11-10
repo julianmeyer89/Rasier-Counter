@@ -51,9 +51,16 @@ class WebServer(
                 path == "history" && method == "GET" ->
                     sendJson(ex, HistoryDto.serializer(), hub.history(queryInt(ex, "hours", 24)))
                 path == "stats" && method == "GET" -> {
-                    val days = queryInt(ex, "days", 7).toLong()
-                    val label = query(ex, "label") ?: "$days Tage"
-                    sendJson(ex, StatsDto.serializer(), hub.stats(days, label))
+                    val today = java.time.LocalDate.now()
+                    val from = query(ex, "from")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today.minusDays(6)
+                    val to = query(ex, "to")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today
+                    val bucket = when (query(ex, "bucket")) {
+                        "hour" -> ServerHub.Bucket.HOUR
+                        "month" -> ServerHub.Bucket.MONTH
+                        else -> ServerHub.Bucket.DAY
+                    }
+                    val label = query(ex, "label") ?: "$from – $to"
+                    sendJson(ex, StatsDto.serializer(), hub.stats(from, to, bucket, label))
                 }
                 path == "events" && method == "GET" ->
                     sendJson(ex, kotlinx.serialization.builtins.ListSerializer(EventDto.serializer()), hub.events())
@@ -80,7 +87,7 @@ class WebServer(
                 }
                 path == "meter" && method == "POST" -> {
                     val req = json.decodeFromString(MeterRequest.serializer(), body(ex))
-                    runBlocking { hub.addMeterEntry(MeterEntry(System.currentTimeMillis(), req.importKwh, req.exportKwh)) }
+                    runBlocking { hub.addMeterEntry(MeterEntry(req.dateMs ?: System.currentTimeMillis(), req.importKwh, req.exportKwh)) }
                     send(ex, 200, "application/json", """{"ok":true}""")
                 }
                 else -> send(ex, 404, "application/json", """{"error":"not found"}""")

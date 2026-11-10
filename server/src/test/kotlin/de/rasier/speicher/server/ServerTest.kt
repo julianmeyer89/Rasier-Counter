@@ -58,8 +58,9 @@ class ServerHubTest {
         val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
         hub.addMeterEntry(de.rasier.speicher.energy.MeterEntry(1_000_000_000_000L, 10000.0, 20.0))
         hub.addMeterEntry(de.rasier.speicher.energy.MeterEntry(1_000_000_000_000L + 7 * 86_400_000L, 10035.0, 22.0))
-        val stats = hub.stats(30, "30 Tage")
+        val stats = hub.stats(java.time.LocalDate.of(2001, 9, 1), java.time.LocalDate.of(2001, 9, 30), ServerHub.Bucket.DAY, "Sep 2001")
         assertEquals(35.0, stats.meterPeriods.single().importKwh, 1e-9)
+        assertEquals(35.0, stats.meterTotal!!.importKwh, 1e-9)
     }
 }
 
