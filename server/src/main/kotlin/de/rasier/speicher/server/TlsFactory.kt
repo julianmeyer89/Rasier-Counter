@@ -32,8 +32,8 @@ object TlsFactory {
      * so server verification uses the JVM's default trust store (public CAs). We authenticate to the
      * broker with the Marstek client certificate.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun load(caFile: File, certFile: File, keyFile: File): Material {
-        val caCerts = readCertificates(caFile)
         val clientCerts = readCertificates(certFile)
         val privateKey = readPrivateKey(keyFile)
         require(clientCerts.isNotEmpty()) { "Kein Client-Zertifikat in ${certFile.name}" }
@@ -41,9 +41,11 @@ object TlsFactory {
         // Default trust managers: the normal set of public root CAs (includes Amazon's roots).
         val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(null as KeyStore?) }
 
+        // Only the client certificate chain belongs here. Marstek's CA (caCerts) is a different,
+        // unrelated chain, so appending it makes KeyStore reject the entry as "chain is not valid".
         val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
             load(null, null)
-            setKeyEntry("client", privateKey, CHARS, (clientCerts + caCerts).toTypedArray())
+            setKeyEntry("client", privateKey, CHARS, clientCerts.toTypedArray())
         }
         val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(keyStore, CHARS) }
 
