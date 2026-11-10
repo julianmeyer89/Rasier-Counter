@@ -28,23 +28,18 @@ object TlsFactory {
     data class Material(val keyManagerFactory: KeyManagerFactory, val trustManagerFactory: TrustManagerFactory)
 
     /**
-     * Builds the TLS material. The trust store contains Marstek's CA plus any extra certificate
-     * files in [extraTrustFiles] — used to pin the broker's own server certificate, which does not
-     * chain to a public CA. We authenticate to the broker with the client certificate.
+     * Builds the TLS material. The broker (AWS IoT) presents a publicly trusted server certificate,
+     * so server verification uses the JVM's default trust store (public CAs). We authenticate to the
+     * broker with the Marstek client certificate.
      */
-    fun load(caFile: File, certFile: File, keyFile: File, extraTrustFiles: List<File> = emptyList()): Material {
+    fun load(caFile: File, certFile: File, keyFile: File): Material {
         val caCerts = readCertificates(caFile)
         val clientCerts = readCertificates(certFile)
         val privateKey = readPrivateKey(keyFile)
         require(clientCerts.isNotEmpty()) { "Kein Client-Zertifikat in ${certFile.name}" }
 
-        val trusted = caCerts + extraTrustFiles.filter { it.exists() }.flatMap { readCertificates(it) }
-        require(trusted.isNotEmpty()) { "Keine vertrauenswürdigen Zertifikate (ca.crt bzw. broker.crt fehlen)" }
-        val trustStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
-            load(null, null)
-            trusted.forEachIndexed { i, c -> setCertificateEntry("trust$i", c) }
-        }
-        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(trustStore) }
+        // Default trust managers: the normal set of public root CAs (includes Amazon's roots).
+        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(null as KeyStore?) }
 
         val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
             load(null, null)

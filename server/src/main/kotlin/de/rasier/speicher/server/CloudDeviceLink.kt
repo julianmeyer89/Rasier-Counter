@@ -62,7 +62,6 @@ class CloudDeviceLink(
             File(config.certDir, "ca.crt"),
             File(config.certDir, "client.crt"),
             File(config.certDir, "client.key"),
-            extraTrustFiles = listOf(File(config.certDir, "broker.crt")),
         )
         val (host, port) = brokerHostPort()
         val c = Mqtt3Client.builder()
@@ -171,7 +170,7 @@ class CloudDeviceLink(
         val fw = version?.substringBefore('.')?.toIntOrNull() ?: return false
         return when {
             type.startsWith("HMJ") -> fw >= 116
-            type.startsWith("HME-4") || type.startsWith("HME-2") -> version!!.length == 3 && fw >= 122
+            type.startsWith("HME-4") || type.startsWith("HME-2") -> version.length == 3 && fw >= 122
             type.startsWith("TPM2") -> true
             else -> false
         }
