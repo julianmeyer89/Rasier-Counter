@@ -13,3 +13,12 @@ captures/
 *.pem
 *.key
 secrets.properties
+
+# Server secrets and certificates (never commit)
+server/config.properties
+server/certs/
+certs/
+*.crt
+*.key
+broker-url
+data/

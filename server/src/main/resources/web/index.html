@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1b5e20">
+  <title>Rasier Speicher</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Rasier Speicher</h1>
+    <button id="refresh" class="ghost" title="Aktualisieren">⟳</button>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Übersicht</button>
+    <button data-tab="batteries">Speicher</button>
+    <button data-tab="stats">Statistik</button>
+    <button data-tab="calibration">Kalibrierung</button>
+    <button data-tab="settings">Einstellungen</button>
+  </nav>
+
+  <main>
+    <section id="overview" class="tab active"></section>
+    <section id="batteries" class="tab"></section>
+    <section id="stats" class="tab"></section>
+    <section id="calibration" class="tab"></section>
+    <section id="settings" class="tab"></section>
+  </main>
+
+  <div id="tokenPrompt" class="overlay hidden">
+    <div class="card">
+      <h2>Zugangstoken</h2>
+      <p>Diese Oberfläche ist mit einem Token geschützt.</p>
+      <input id="tokenInput" type="password" placeholder="Token">
+      <button id="tokenSave">Speichern</button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -3,6 +3,8 @@ package de.rasier.speicher.settings
 import de.rasier.speicher.control.Alert
 import de.rasier.speicher.control.AutomationState
 import de.rasier.speicher.energy.DailyEnergy
+import de.rasier.speicher.energy.DeviceDay
+import de.rasier.speicher.energy.MeterEntry
 import de.rasier.speicher.model.SystemSnapshot
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -51,6 +53,12 @@ class FileStore(private val dir: File) {
 
     fun loadAlerts(): List<Alert> = read("alerts.json", ListSerializer(Alert.serializer())) ?: emptyList()
     fun saveAlerts(alerts: List<Alert>) = write("alerts.json", ListSerializer(Alert.serializer()), alerts)
+
+    fun loadMeterEntries(): List<MeterEntry> = read("meter.json", ListSerializer(MeterEntry.serializer())) ?: emptyList()
+    fun saveMeterEntries(entries: List<MeterEntry>) = write("meter.json", ListSerializer(MeterEntry.serializer()), entries)
+
+    fun loadDeviceDays(): List<DeviceDay> = read("device_days.json", ListSerializer(DeviceDay.serializer())) ?: emptyList()
+    fun saveDeviceDays(days: List<DeviceDay>) = write("device_days.json", ListSerializer(DeviceDay.serializer()), days)
 
     private fun <T> read(name: String, serializer: kotlinx.serialization.KSerializer<T>): T? {
         val f = File(dir, name)

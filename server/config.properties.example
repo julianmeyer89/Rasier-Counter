@@ -1,0 +1,48 @@
+# Beispiel-Konfiguration für den Rasier-Speicher-Server.
+# Diese Datei NICHT mit echten Zugangsdaten ins Repository committen.
+# Auf der VM nach config.properties kopieren und ausfüllen. Werte lassen sich auch
+# per Umgebungsvariable setzen (RASIER_EMAIL, RASIER_PASSWORD, ...), die Vorrang haben.
+
+# Demo-Modus (true = simulierte Geräte, kein Zugang nötig). Zum Ausprobieren.
+demo=false
+
+# Marstek-Konto. Am besten ein ZWEITES Konto, dem die Geräte freigegeben sind,
+# damit die offizielle App am Hauptkonto angemeldet bleiben kann.
+email=
+# Entweder das Klartextpasswort (wird nur zum Hashen gelesen, nicht gespeichert)
+password=
+# ... oder direkt der MD5-Hash:
+# password_md5=
+
+# Verzeichnis mit den Zertifikatsdateien aus dem hame-relay-Image:
+#   ca.crt, client.crt, client.key, broker-url
+cert_dir=certs
+# Falls die Broker-Adresse nicht in cert_dir/broker-url steht, hier setzen (host:port):
+# broker_url=
+
+# Wo Statistik und Verlauf gespeichert werden:
+data_dir=data
+
+# Weboberfläche
+web_port=8080
+# Zusätzlicher Schutz neben Tailscale (leer = keiner):
+auth_token=
+
+# Abfrage-Intervall in Sekunden
+poll_interval_seconds=30
+
+# Automatik darf Einstellungen am Speicher ändern (Kalibrierung, Ausgleich).
+# Zu Beginn false lassen und erst einschalten, wenn die Werte stimmen.
+automations_may_write=false
+# "No-Flash"-Befehle nutzen (schont den Speicher-Flash, braucht neuere Firmware; bei
+# Problemen auf false lassen):
+use_no_flash_commands=false
+
+# Tarif für die Ersparnisberechnung
+import_cent_per_kwh=30
+feed_in_cent_per_kwh=0
+base_fee_euro_per_month=0
+
+# Anlage
+inverter_max_w=1600
+inverter_efficiency=0.95
