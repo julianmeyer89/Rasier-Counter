@@ -102,7 +102,7 @@ class WebServerTest {
         assertEquals(2, dto.batteries.size)
 
         val html = get("http://127.0.0.1:$port/")
-        assertTrue(html.contains("Rasier Speicher"))
+        assertTrue(html.contains("Heim PV Anlage"))
 
         val js = get("http://127.0.0.1:$port/app.js")
         assertTrue(js.contains("renderOverview"))
