@@ -44,6 +44,8 @@ class ServerHub(
 ) {
     private val mutex = Mutex()
     private val store = FileStore(dataDir)
+    private val settingsFile = File(dataDir, "user_settings.json")
+    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     private var integrator = EnergyIntegrator(config.system, zone).also { it.restore(store.loadDays()) }
     private var engine = AutomationEngine(config.automation.copy(batteryIds = link.batteryIds))
     private val writeGuard = WriteGuard()
@@ -65,6 +67,11 @@ class ServerHub(
 
     val tariff: Tariff get() = config.tariff
     val pollIntervalSeconds: Int get() = config.pollIntervalSeconds
+
+    init {
+        // Dashboard settings override the config file so they survive restarts and updates.
+        loadSavedSettings()
+    }
 
     suspend fun poll(nowMs: Long = System.currentTimeMillis()) = mutex.withLock {
         val snapshot = try {
@@ -130,6 +137,14 @@ class ServerHub(
     }
 
     suspend fun updateSettings(update: SettingsDto) = mutex.withLock {
+        applySettings(update)
+        runCatching { settingsFile.writeText(json.encodeToString(SettingsDto.serializer(), update)) }
+            .onFailure { log("Einstellungen speichern fehlgeschlagen: ${it.message}") }
+        rebuild(System.currentTimeMillis())
+    }
+
+    /** Applies the tunable settings onto [config] and rebuilds the engine/integrator. */
+    private fun applySettings(update: SettingsDto) {
         config = config.copy(
             tariff = Tariff(update.importCentPerKwh, update.feedInCentPerKwh, update.baseFeeEuroPerMonth),
             system = config.system.copy(
@@ -145,7 +160,13 @@ class ServerHub(
         )
         engine = AutomationEngine(config.automation.copy(batteryIds = link.batteryIds))
         integrator = EnergyIntegrator(config.system, zone).also { it.restore(store.loadDays()) }
-        rebuild(System.currentTimeMillis())
+    }
+
+    /** Restores settings saved from the dashboard, so they survive a restart/update. */
+    private fun loadSavedSettings() {
+        if (!settingsFile.exists()) return
+        runCatching { applySettings(json.decodeFromString(SettingsDto.serializer(), settingsFile.readText())) }
+            .onFailure { log("Gespeicherte Einstellungen nicht lesbar: ${it.message}") }
     }
 
     fun settingsDto() = SettingsDto(

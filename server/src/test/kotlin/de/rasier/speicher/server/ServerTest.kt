@@ -62,6 +62,20 @@ class ServerHubTest {
         assertEquals(35.0, stats.meterPeriods.single().importKwh, 1e-9)
         assertEquals(35.0, stats.meterTotal!!.importKwh, 1e-9)
     }
+
+    @Test
+    fun `dashboard settings survive a restart`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val changed = hub.settingsDto().copy(importCentPerKwh = 42.5, pollIntervalSeconds = 15, automationsMayWrite = true)
+        hub.updateSettings(changed)
+
+        // A fresh hub (as after an update/restart) must read the saved settings, not the config file.
+        val again = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        assertEquals(42.5, again.settingsDto().importCentPerKwh, 1e-9)
+        assertEquals(15, again.settingsDto().pollIntervalSeconds)
+        assertTrue(again.settingsDto().automationsMayWrite)
+    }
 }
 
 class WebServerTest {
