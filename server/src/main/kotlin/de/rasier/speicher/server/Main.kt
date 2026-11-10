@@ -43,7 +43,7 @@ fun main(args: Array<String>) {
             val started = System.currentTimeMillis()
             runCatching { hub.poll() }.onFailure { log("Abfragefehler: ${it.message}") }
             // Read the interval from the hub each round so a change in the settings takes effect live.
-            val interval = hub.pollIntervalSeconds.coerceIn(10, 3600) * 1000L
+            val interval = hub.pollIntervalSeconds.coerceIn(5, 3600) * 1000L
             delay((interval - (System.currentTimeMillis() - started)).coerceAtLeast(1000))
         }
     }

@@ -136,7 +136,7 @@ class ServerHub(
                 inverterEfficiency = (update.inverterEfficiencyPercent / 100).coerceIn(0.5, 1.0),
                 inverterMaxW = update.inverterMaxW,
             ),
-            pollIntervalSeconds = update.pollIntervalSeconds.coerceIn(10, 3600),
+            pollIntervalSeconds = update.pollIntervalSeconds.coerceIn(5, 3600),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),

@@ -350,7 +350,8 @@ async function renderSettings() {
     <div class="card"><h2>Anlage</h2>
     <label class="field">Wechselrichter max. (W)</label><input id="s_invmax" type="number" value="${s.inverterMaxW}">
     <label class="field">Wirkungsgrad (%)</label><input id="s_eff" type="number" step="1" value="${Math.round(s.inverterEfficiencyPercent)}">
-    <label class="field">Abfrage-Intervall (s)</label><input id="s_poll" type="number" value="${s.pollIntervalSeconds}">
+    <label class="field">Abfrage-Intervall (s), Minimum 5</label><input id="s_poll" type="number" min="5" value="${s.pollIntervalSeconds}">
+    <div class="note">Kleiner = häufigere Live-Werte, aber mehr Last auf der Marstek-Cloud. 5 s ist das sinnvolle Minimum; 10–30 s sind sparsam.</div>
     </div>
     <div class="card"><h2>Automatik</h2>
     <div class="switch"><span>Automatik darf Einstellungen ändern</span><input type="checkbox" id="s_write" ${s.automationsMayWrite ? "checked" : ""}></div>

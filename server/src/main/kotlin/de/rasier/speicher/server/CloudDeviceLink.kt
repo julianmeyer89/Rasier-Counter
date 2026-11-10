@@ -105,7 +105,7 @@ class CloudDeviceLink(
                 .payload(CloudPayloads.POLL_RUNTIME.toByteArray(Charsets.US_ASCII)).send()
         }
         // Give the devices a moment to answer on their status topics.
-        delay(2500)
+        delay(1200)
 
         val batteries = mutableListOf<BatteryState>()
         var meter: MeterReading? = null
