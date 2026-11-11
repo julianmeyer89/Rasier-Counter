@@ -27,6 +27,9 @@ data class DeviceDay(
     val pvWh: Int = 0,
     val outputWh: Int = 0,
     val lastSeenMs: Long = 0,
+    /** Integrated energy into/out of the battery cells (net PV-minus-output), for per-battery charts. */
+    val chargeWh: Int = 0,
+    val dischargeWh: Int = 0,
 )
 
 /** Evaluation of the period between two meter readings. Energy in kWh. */
@@ -78,7 +81,31 @@ object MeterEvaluation {
             pvWh = maxOf(existing?.pvWh ?: 0, pvWh ?: 0),
             outputWh = maxOf(existing?.outputWh ?: 0, outputWh ?: 0),
             lastSeenMs = timestampMs,
+            chargeWh = existing?.chargeWh ?: 0,
+            dischargeWh = existing?.dischargeWh ?: 0,
         )
+        return days.filterNot { it.date == date && it.batteryId == batteryId } + updated
+    }
+
+    /** Adds integrated charge/discharge energy (Wh) to a battery's day, creating the entry if needed. */
+    fun addBatteryEnergy(
+        days: List<DeviceDay>,
+        batteryId: String,
+        timestampMs: Long,
+        chargeWh: Int,
+        dischargeWh: Int,
+        zone: ZoneId,
+    ): List<DeviceDay> {
+        if (chargeWh == 0 && dischargeWh == 0) return days
+        val date = Instant.ofEpochMilli(timestampMs).atZone(zone).toLocalDate().toString()
+        val existing = days.firstOrNull { it.date == date && it.batteryId == batteryId }
+        val updated = (existing ?: DeviceDay(date = date, batteryId = batteryId)).let {
+            it.copy(
+                chargeWh = it.chargeWh + chargeWh,
+                dischargeWh = it.dischargeWh + dischargeWh,
+                lastSeenMs = timestampMs,
+            )
+        }
         return days.filterNot { it.date == date && it.batteryId == batteryId } + updated
     }
 

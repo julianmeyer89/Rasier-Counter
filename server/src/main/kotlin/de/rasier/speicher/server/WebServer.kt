@@ -63,8 +63,17 @@ class WebServer(
                     val label = query(ex, "label") ?: "$from – $to"
                     sendJson(ex, StatsDto.serializer(), hub.stats(from, to, bucket, label))
                 }
-                path == "batterystats" && method == "GET" ->
-                    sendJson(ex, BatteryStatsDto.serializer(), hub.batteryStats(queryInt(ex, "days", 14)))
+                path == "batterystats" && method == "GET" -> {
+                    val today = java.time.LocalDate.now()
+                    val from = query(ex, "from")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today.minusDays(6)
+                    val to = query(ex, "to")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today
+                    val bucket = when (query(ex, "bucket")) {
+                        "5min" -> ServerHub.Bucket.FIVE_MIN
+                        "month" -> ServerHub.Bucket.MONTH
+                        else -> ServerHub.Bucket.DAY
+                    }
+                    sendJson(ex, BatteryStatsDto.serializer(), hub.batteryStats(from, to, bucket))
+                }
                 path == "events" && method == "GET" ->
                     sendJson(ex, kotlinx.serialization.builtins.ListSerializer(EventDto.serializer()), hub.events())
                 path == "settings" && method == "GET" -> sendJson(ex, SettingsDto.serializer(), hub.settingsDto())

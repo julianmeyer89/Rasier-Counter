@@ -160,14 +160,19 @@ data class SettingsDto(
     val calibrationIntervalDays: Int,
 )
 
+/** Per-battery statistics. All value lists are aligned to [labels]; energy in Wh. */
 @Serializable
-data class BatteryStatsDto(val series: List<BatterySeriesDto>)
+data class BatteryStatsDto(val bucket: String, val labels: List<String>, val series: List<BatterySeriesDto>)
 
 @Serializable
-data class BatterySeriesDto(val id: String, val name: String, val days: List<BatteryDayDto>)
-
-@Serializable
-data class BatteryDayDto(val date: String, val outputWh: Int, val pvWh: Int)
+data class BatterySeriesDto(
+    val id: String,
+    val name: String,
+    val charge: List<Int>,
+    val discharge: List<Int>,
+    val pv: List<Int>,
+    val output: List<Int>,
+)
 
 @Serializable
 data class EventDto(val t: Long, val text: String)

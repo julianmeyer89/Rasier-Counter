@@ -72,6 +72,9 @@ class ServerHub(
     private var lastBatteryPollMs = 0L
     private var lastMeterTimestampMs = 0L
     private var lastHistorySampleMs = 0L
+    private var lastBatterySnapshot: SystemSnapshot? = null
+    private val chargeRemainder = HashMap<String, Double>()
+    private val dischargeRemainder = HashMap<String, Double>()
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
 
@@ -212,19 +215,76 @@ class ServerHub(
 
     fun events(): List<EventDto> = events.takeLast(100).reversed().map { EventDto(it.t, it.text) }
 
-    /** Per-battery daily energy (output and PV) over the last [days] days, from the device day counters. */
-    fun batteryStats(days: Int): BatteryStatsDto {
-        val n = days.coerceIn(1, 365)
-        val cutoff = LocalDate.now(zone).minusDays((n - 1).toLong()).toString()
-        val order = link.batteryIds
-        val series = deviceDays.filter { it.date >= cutoff }.groupBy { it.batteryId }.map { (id, list) ->
+    /** Per-battery charge/discharge/PV/output for the window, bucketed like the statistics chart. */
+    fun batteryStats(from: LocalDate, to: LocalDate, bucket: Bucket): BatteryStatsDto = when (bucket) {
+        Bucket.FIVE_MIN -> batteryFiveMinute(from)
+        else -> batteryDaily(from, to, monthly = bucket == Bucket.MONTH)
+    }
+
+    private fun batteryName(id: String) = lastBatteries[id]?.name ?: id.takeLast(6)
+
+    /** Daily (or monthly) per-battery energy from the stored device day counters. */
+    private fun batteryDaily(from: LocalDate, to: LocalDate, monthly: Boolean): BatteryStatsDto {
+        val fromS = from.toString(); val toS = to.toString()
+        val recent = deviceDays.filter { it.date in fromS..toS }
+        val keyOf: (DeviceDay) -> String = { if (monthly) it.date.substring(0, 7) else it.date }
+        val keys = recent.map(keyOf).distinct().sorted()
+        val labels = keys.map { if (monthly) it.substring(5) + "." + it.substring(0, 4) else it.substring(8, 10) + "." + it.substring(5, 7) + "." }
+        val series = link.batteryIds.mapNotNull { id ->
+            val byKey = recent.filter { it.batteryId == id }.groupBy(keyOf)
+            if (byKey.isEmpty()) return@mapNotNull null
             BatterySeriesDto(
-                id = id,
-                name = lastBatteries[id]?.name ?: id.takeLast(6),
-                days = list.sortedBy { it.date }.map { BatteryDayDto(it.date, it.outputWh, it.pvWh) },
+                id = id, name = batteryName(id),
+                charge = keys.map { k -> byKey[k]?.sumOf { it.chargeWh } ?: 0 },
+                discharge = keys.map { k -> byKey[k]?.sumOf { it.dischargeWh } ?: 0 },
+                pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 },
+                output = keys.map { k -> byKey[k]?.sumOf { it.outputWh } ?: 0 },
             )
-        }.sortedBy { order.indexOf(it.id).let { i -> if (i < 0) Int.MAX_VALUE else i } }
-        return BatteryStatsDto(series)
+        }
+        return BatteryStatsDto(if (monthly) Bucket.MONTH.name else Bucket.DAY.name, labels, series)
+    }
+
+    /** 5-minute per-battery energy of one day, integrated from the per-battery power history. */
+    private fun batteryFiveMinute(day: LocalDate): BatteryStatsDto {
+        val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        val slotMs = 5 * 60_000L; val slots = 288
+        val ids = link.batteryIds
+        val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
+        val charge = Array(ids.size) { DoubleArray(slots) }
+        val discharge = Array(ids.size) { DoubleArray(slots) }
+        val pv = Array(ids.size) { DoubleArray(slots) }
+        val output = Array(ids.size) { DoubleArray(slots) }
+        for (i in 1 until points.size) {
+            val a = points[i - 1]; val b = points[i]
+            val dt = b.t - a.t
+            if (dt <= 0 || dt > 10 * 60_000L) continue
+            val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
+            val hours = dt / 3_600_000.0
+            for (idx in ids.indices) {
+                val apv = a.batPvW.getOrNull(idx) ?: continue
+                val aout = a.batOutW.getOrNull(idx) ?: 0
+                val bpv = b.batPvW.getOrNull(idx) ?: 0
+                val bout = b.batOutW.getOrNull(idx) ?: 0
+                val netA = apv - aout; val netB = bpv - bout
+                pv[idx][slot] += (apv + bpv) / 2.0 * hours
+                output[idx][slot] += (aout + bout) / 2.0 * hours
+                charge[idx][slot] += (maxOf(netA, 0) + maxOf(netB, 0)) / 2.0 * hours
+                discharge[idx][slot] += (maxOf(-netA, 0) + maxOf(-netB, 0)) / 2.0 * hours
+            }
+        }
+        val labels = (0 until slots).map {
+            val m = (it * slotMs / 60_000L).toInt(); "%02d:%02d".format(m / 60, m % 60)
+        }
+        val series = ids.mapIndexed { idx, id ->
+            BatterySeriesDto(
+                id = id, name = batteryName(id),
+                charge = charge[idx].map { it.roundToInt() },
+                discharge = discharge[idx].map { it.roundToInt() },
+                pv = pv[idx].map { it.roundToInt() },
+                output = output[idx].map { it.roundToInt() },
+            )
+        }
+        return BatteryStatsDto(Bucket.FIVE_MIN.name, labels, series)
     }
 
     enum class Bucket { FIVE_MIN, HOUR, DAY, MONTH }
@@ -361,10 +421,33 @@ class ServerHub(
         for (b in snapshot.batteries) {
             days = MeterEvaluation.updateDeviceDays(days, b.id, b.timestampMs, b.dailyPvWh, b.dailyOutputWh, zone)
         }
+        // Integrate per-battery charge/discharge (net PV-minus-output) since the previous snapshot.
+        // Sub-Wh increments are carried in [chargeRemainder]/[dischargeRemainder] so fast polling adds up.
+        val prev = lastBatterySnapshot
+        lastBatterySnapshot = snapshot
+        if (prev != null) {
+            val dt = snapshot.timestampMs - prev.timestampMs
+            if (dt in 1..(10 * 60_000L)) {
+                val hours = dt / 3_600_000.0
+                val prevById = prev.batteries.associateBy { it.id }
+                for (b in snapshot.batteries) {
+                    val a = prevById[b.id] ?: continue
+                    val netA = a.totalPvW - a.totalOutputW
+                    val netB = b.totalPvW - b.totalOutputW
+                    val chargeW = (maxOf(netA, 0) + maxOf(netB, 0)) / 2.0
+                    val dischargeW = (maxOf(-netA, 0) + maxOf(-netB, 0)) / 2.0
+                    val cTot = (chargeRemainder[b.id] ?: 0.0) + chargeW * hours
+                    val dTot = (dischargeRemainder[b.id] ?: 0.0) + dischargeW * hours
+                    val cInt = cTot.toInt(); val dInt = dTot.toInt()
+                    chargeRemainder[b.id] = cTot - cInt
+                    dischargeRemainder[b.id] = dTot - dInt
+                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, zone)
+                }
+            }
+        }
         if (days != deviceDays) {
             val cutoff = LocalDate.now(zone).minusDays(800).toString()
             deviceDays = days.filter { it.date >= cutoff }
-            store.saveDeviceDays(deviceDays)
         }
     }
 
@@ -404,6 +487,7 @@ class ServerHub(
         val cutoff = LocalDate.now(zone).minusDays(730).toString()
         store.saveDays(integrator.totals.values.filter { it.date >= cutoff })
         store.saveHistory(history)
+        store.saveDeviceDays(deviceDays)
     }
 
     private fun describe(c: BatteryCommand): String {

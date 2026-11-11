@@ -18,6 +18,9 @@ data class HistoryPoint(
     val pvW: Int,
     val outW: Int,
     val soc: List<Int>,
+    /** Per-battery PV input and output power, in the battery order, for per-battery charts. */
+    val batPvW: List<Int> = emptyList(),
+    val batOutW: List<Int> = emptyList(),
 )
 
 fun SystemSnapshot.toHistoryPoint() = HistoryPoint(
@@ -26,6 +29,8 @@ fun SystemSnapshot.toHistoryPoint() = HistoryPoint(
     pvW = batteries.sumOf { it.totalPvW },
     outW = batteries.sumOf { it.totalOutputW },
     soc = batteries.map { it.socPercent },
+    batPvW = batteries.map { it.totalPvW },
+    batOutW = batteries.map { it.totalOutputW },
 )
 
 @Serializable

@@ -188,72 +188,107 @@ function renderBatteries(s) {
     }
     html += `</div>`;
   }
-  html += `<div class="card"><h2>Abgabe je Speicher</h2>
+  const modeBtns = [["day", "Tag"], ["week", "Woche"], ["month", "Monat"], ["year", "Jahr"]]
+    .map(([m, l]) => `<button class="sec ${batView.mode === m ? "on" : ""}" onclick="setBatMode('${m}')">${l}</button>`).join("");
+  html += `<div class="card"><div class="chips">${modeBtns}</div>
+    <div class="navrow"><button class="ghost" onclick="batNav(-1)">◀</button><b id="batLabel"></b><button class="ghost" onclick="batNav(1)">▶</button></div></div>
+    <div class="card"><h2>Lade-/Entladekurven je Speicher</h2>
     <div style="margin-bottom:8px">
-      <button class="sec" id="batm-output" onclick="setBatMetric('output')">Abgabe</button>
-      <button class="sec" id="batm-pv" onclick="setBatMetric('pv')">PV-Ertrag</button></div>
-    <div id="batLegend" class="chips"></div>
+      <button class="sec ${batChartMode === "bar" ? "on" : ""}" onclick="setBatChartMode('bar')">Balken</button>
+      <button class="sec ${batChartMode === "line" ? "on" : ""}" onclick="setBatChartMode('line')">Linie</button></div>
+    <div id="batChips" class="chips"></div>
     <canvas id="batChart"></canvas>
     <input type="range" id="batSlider" min="0" max="0" value="0" oninput="onBatSlider(this.value)" style="width:100%">
     <div id="batReadout" class="readout"></div>
-    <div class="note">Tageswerte der letzten 14 Tage aus den Zählern der Speicher. Regler ziehen für einen Tag.</div></div>`;
+    <div class="note">Ladung/Entladung = Energie in bzw. aus dem Speicher (PV minus Abgabe). Tag: 5‑Minuten-Auflösung, sonst je Tag bzw. Monat. Kategorien antippen zum Ein-/Ausblenden.</div></div>`;
   document.getElementById("batteries").innerHTML = html;
   loadBatteryStats();
 }
 
-// ---- per-battery output chart ----
-const BAT_COLORS = ["#00897b", "#6a7bd0", "#e8a33d", "#c0557a", "#4aa3df"];
-let batStats = null, batStatsFetchedMs = 0, batMetric = localStorage.getItem("batMetric") || "output", batSelected = null;
+// ---- per-battery charge/discharge chart (mirrors the statistics chart) ----
+const BAT_METRICS = [
+  { key: "charge", label: "Ladung", field: "charge" },
+  { key: "discharge", label: "Entladung", field: "discharge" },
+  { key: "pv", label: "PV", field: "pv" },
+  { key: "output", label: "Abgabe", field: "output" },
+];
+// One colour family per battery (teal, indigo, …), one shade per metric.
+const BAT_PALETTE = ["#00897b", "#26a69a", "#80cbc4", "#4db6ac", "#3949ab", "#5c6bc0", "#9fa8da", "#7986cb", "#e8a33d", "#c0557a"];
+let batView = { mode: localStorage.getItem("batMode") || "week", anchor: new Date() };
+let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetrics") || '["discharge","charge"]'));
+let batChartMode = localStorage.getItem("batChartMode") || "bar";
+let batData = null, batKey = "", batSelected = null;
+const batColor = (bi, mi) => BAT_PALETTE[(bi * BAT_METRICS.length + mi) % BAT_PALETTE.length];
+
+function computeBatWindow() {
+  const a = batView.anchor;
+  if (batView.mode === "day") return { from: fmt(a), to: fmt(a), bucket: "5min", label: a.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }) };
+  if (batView.mode === "week") { const s = startOfWeek(a), e = new Date(s); e.setDate(s.getDate() + 6); return { from: fmt(s), to: fmt(e), bucket: "day", label: deDate(s) + "–" + deDate(e) }; }
+  if (batView.mode === "month") { const s = new Date(a.getFullYear(), a.getMonth(), 1), e = new Date(a.getFullYear(), a.getMonth() + 1, 0); return { from: fmt(s), to: fmt(e), bucket: "day", label: a.toLocaleDateString("de-DE", { month: "long", year: "numeric" }) }; }
+  return { from: a.getFullYear() + "-01-01", to: a.getFullYear() + "-12-31", bucket: "month", label: String(a.getFullYear()) };
+}
+function setBatMode(m) { batView.mode = m; localStorage.setItem("batMode", m); batSelected = null; renderBatteries(lastState); }
+function batNav(d) {
+  const a = batView.anchor;
+  if (batView.mode === "day") a.setDate(a.getDate() + d);
+  else if (batView.mode === "week") a.setDate(a.getDate() + 7 * d);
+  else if (batView.mode === "month") a.setMonth(a.getMonth() + d);
+  else a.setFullYear(a.getFullYear() + d);
+  batView.anchor = new Date(a); batSelected = null; renderBatteries(lastState);
+}
+function setBatChartMode(m) { batChartMode = m; localStorage.setItem("batChartMode", m); renderBatteries(lastState); }
+function toggleBatMetric(k) {
+  if (batMetrics.has(k)) batMetrics.delete(k); else batMetrics.add(k);
+  localStorage.setItem("batMetrics", JSON.stringify([...batMetrics])); drawBatteryChart();
+}
+function onBatSlider(v) { batSelected = +v; drawBatteryChart(); }
 async function loadBatteryStats(force) {
+  const w = computeBatWindow();
+  const lbl = document.getElementById("batLabel"); if (lbl) lbl.textContent = w.label;
+  const key = `${w.from}|${w.to}|${w.bucket}`;
   try {
-    if (force || !batStats || Date.now() - batStatsFetchedMs > 60000) {
-      batStats = await api("batterystats?days=14");
-      batStatsFetchedMs = Date.now();
+    if (force || key !== batKey || !batData) {
+      batData = await api(`batterystats?from=${w.from}&to=${w.to}&bucket=${w.bucket}`);
+      batKey = key;
     }
     drawBatteryChart();
   } catch (e) { /* ignore */ }
 }
-function setBatMetric(m) { batMetric = m; localStorage.setItem("batMetric", m); drawBatteryChart(); }
-function onBatSlider(v) { batSelected = +v; drawBatteryChart(); }
-function batDates() {
-  const set = new Set();
-  (batStats?.series || []).forEach(s => s.days.forEach(d => set.add(d.date)));
-  return [...set].sort();
+function batSeriesList() {
+  const out = [];
+  (batData?.series || []).forEach((b, bi) => BAT_METRICS.forEach((m, mi) => {
+    if (batMetrics.has(m.key)) out.push({ color: batColor(bi, mi), label: `${b.name} ${m.label}`, values: b[m.field] || [] });
+  }));
+  return out;
 }
-function batValue(series, date) {
-  const d = series.days.find(x => x.date === date);
-  return d ? (batMetric === "pv" ? d.pvWh : d.outputWh) : 0;
-}
-function batLabel(d) { return d.substring(8, 10) + "." + d.substring(5, 7) + "."; }
-function drawBatteryChart() {
-  const canvas = document.getElementById("batChart");
-  if (!canvas) return;
-  const series = batStats?.series || [];
-  const dates = batDates();
-  const bo = document.getElementById("batm-output"), bp = document.getElementById("batm-pv");
-  if (bo) bo.classList.toggle("on", batMetric === "output");
-  if (bp) bp.classList.toggle("on", batMetric === "pv");
-  const col = (i) => BAT_COLORS[i % BAT_COLORS.length];
-  const legend = document.getElementById("batLegend");
-  if (legend) legend.innerHTML = series.map((s, i) => {
-    const tot = s.days.reduce((a, d) => a + (batMetric === "pv" ? d.pvWh : d.outputWh), 0);
-    return `<span class="chip on" style="--c:${col(i)}"><span class="dot" style="background:${col(i)};border-color:${col(i)}"></span>${s.name}: ${KWH(tot)}</span>`;
+function renderBatChips() {
+  const box = document.getElementById("batChips"); if (!box) return;
+  box.innerHTML = BAT_METRICS.map((m, mi) => {
+    const on = batMetrics.has(m.key), c = batColor(0, mi);
+    return `<button class="chip ${on ? "on" : ""}" style="${on ? `--c:${c}` : ""}" onclick="toggleBatMetric('${m.key}')"><span class="dot" style="background:${on ? c : "transparent"};border-color:${c}"></span>${m.label}</button>`;
   }).join("");
+}
+function drawBatteryChart() {
+  const canvas = document.getElementById("batChart"); if (!canvas) return;
+  renderBatChips();
+  const labels = batData?.labels || [];
+  const series = batSeriesList();
   const slider = document.getElementById("batSlider"), ro = document.getElementById("batReadout");
-  if (!dates.length || !series.length) {
+  if (!labels.length || !series.length) {
     if (slider) slider.max = 0;
-    if (ro) ro.innerHTML = `<div class="note">Noch keine Tagesdaten vorhanden.</div>`;
-    barChart(canvas, [], {});
-    return;
+    if (ro) ro.innerHTML = `<div class="note">Für diesen Zeitraum liegen noch keine Speicherdaten vor.</div>`;
+    barChart(canvas, [], {}); return;
   }
-  if (batSelected == null || batSelected > dates.length - 1) batSelected = dates.length - 1;
-  if (slider) { slider.max = dates.length - 1; slider.value = batSelected; }
-  const groups = dates.map(dt => series.map((s, i) => [col(i), batValue(s, dt) / 1000]));
-  barChart(canvas, groups, { unit: "kWh", labels: dates.map(batLabel), selected: batSelected });
-  const dt = dates[batSelected];
-  ro.innerHTML = `<div class="ro-h">${dt.substring(8, 10)}.${dt.substring(5, 7)}.${dt.substring(0, 4)}</div>` +
-    series.map((s, i) =>
-      `<span class="ro" style="color:${col(i)}"><span class="dot" style="background:${col(i)};border-color:${col(i)}"></span>${s.name}: <b style="color:${col(i)}">${KWH(batValue(s, dt))}</b></span>`).join("");
+  if (batSelected == null || batSelected > labels.length - 1) batSelected = labels.length - 1;
+  if (slider) { slider.max = labels.length - 1; slider.value = batSelected; }
+  if (batChartMode === "line") {
+    lineChart(canvas, series.map(s => ({ color: s.color, points: labels.map((_, i) => [i, (s.values[i] || 0) / 1000]) })),
+      { unit: "kWh", selected: batSelected, xTicks: /^\d\d:\d\d$/.test(labels[0]) ? timeTicks(labels) : xTicksFor(labels) });
+  } else {
+    barChart(canvas, labels.map((_, i) => series.map(s => [s.color, (s.values[i] || 0) / 1000])), { unit: "kWh", labels, selected: batSelected });
+  }
+  ro.innerHTML = `<div class="ro-h">${labels[batSelected]}</div>` + series.map(s =>
+    `<span class="ro" style="color:${s.color}"><span class="dot" style="background:${s.color};border-color:${s.color}"></span>${s.label}: <b style="color:${s.color}">${KWH(s.values[batSelected] || 0)}</b></span>`).join("");
 }
 
 async function sendCmd(batteryId, type, value) {
@@ -347,16 +382,18 @@ function xTicksFor(labels) {
   const step = Math.max(1, Math.ceil(labels.length / 7));
   return labels.map((l, i) => ({ x: i, label: l, i })).filter(t => t.i % step === 0 || t.i === labels.length - 1);
 }
-// For the day view (labels "HH:MM") place ticks on full hours every 3 h; otherwise space evenly.
+// Time labels "HH:MM" -> ticks on full hours every 3 h.
+function timeTicks(labels) {
+  const ticks = [];
+  labels.forEach((l, i) => {
+    const [h, m] = l.split(":");
+    if (m === "00" && (+h) % 3 === 0) ticks.push({ x: i, label: h + ":00" });
+  });
+  return ticks;
+}
+// For the day view (labels "HH:MM") place ticks on full hours; otherwise space evenly.
 function statsXTicks() {
-  if (statsLabels.length && /^\d\d:\d\d$/.test(statsLabels[0])) {
-    const ticks = [];
-    statsLabels.forEach((l, i) => {
-      const [h, m] = l.split(":");
-      if (m === "00" && (+h) % 3 === 0) ticks.push({ x: i, label: h + ":00" });
-    });
-    return ticks;
-  }
+  if (statsLabels.length && /^\d\d:\d\d$/.test(statsLabels[0])) return timeTicks(statsLabels);
   return xTicksFor(statsLabels);
 }
 function drawStatsChart() {
