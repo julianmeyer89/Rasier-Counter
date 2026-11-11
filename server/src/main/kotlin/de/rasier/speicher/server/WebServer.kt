@@ -63,6 +63,8 @@ class WebServer(
                     val label = query(ex, "label") ?: "$from – $to"
                     sendJson(ex, StatsDto.serializer(), hub.stats(from, to, bucket, label))
                 }
+                path == "batterystats" && method == "GET" ->
+                    sendJson(ex, BatteryStatsDto.serializer(), hub.batteryStats(queryInt(ex, "days", 14)))
                 path == "events" && method == "GET" ->
                     sendJson(ex, kotlinx.serialization.builtins.ListSerializer(EventDto.serializer()), hub.events())
                 path == "settings" && method == "GET" -> sendJson(ex, SettingsDto.serializer(), hub.settingsDto())

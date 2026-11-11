@@ -102,7 +102,7 @@ sudo journalctl -u rasier -f     # Log ansehen
 ## Bedienung
 
 - **Übersicht:** Live-Werte, Ersparnis heute, Verlauf der letzten 24 Stunden.
-- **Speicher:** beide Speicher einzeln, DoD und Lademodus von Hand setzen.
+- **Speicher:** beide Speicher einzeln, DoD und Lademodus von Hand setzen, Abgabe/PV heute je Speicher und ein Tagesgraph der Abgabe (bzw. PV) je Speicher.
 - **Statistik:** Woche/Monat/Jahr, und Eingabe der Zählerstände (1.8.0/2.8.0) vom Iskra-Zähler
   für exakte Werte.
 - **Kalibrierung:** starten/abbrechen, Protokoll.

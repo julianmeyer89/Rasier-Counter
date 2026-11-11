@@ -161,6 +161,15 @@ data class SettingsDto(
 )
 
 @Serializable
+data class BatteryStatsDto(val series: List<BatterySeriesDto>)
+
+@Serializable
+data class BatterySeriesDto(val id: String, val name: String, val days: List<BatteryDayDto>)
+
+@Serializable
+data class BatteryDayDto(val date: String, val outputWh: Int, val pvWh: Int)
+
+@Serializable
 data class EventDto(val t: Long, val text: String)
 
 @Serializable

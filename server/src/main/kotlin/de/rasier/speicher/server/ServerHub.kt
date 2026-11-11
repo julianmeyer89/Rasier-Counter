@@ -212,6 +212,21 @@ class ServerHub(
 
     fun events(): List<EventDto> = events.takeLast(100).reversed().map { EventDto(it.t, it.text) }
 
+    /** Per-battery daily energy (output and PV) over the last [days] days, from the device day counters. */
+    fun batteryStats(days: Int): BatteryStatsDto {
+        val n = days.coerceIn(1, 365)
+        val cutoff = LocalDate.now(zone).minusDays((n - 1).toLong()).toString()
+        val order = link.batteryIds
+        val series = deviceDays.filter { it.date >= cutoff }.groupBy { it.batteryId }.map { (id, list) ->
+            BatterySeriesDto(
+                id = id,
+                name = lastBatteries[id]?.name ?: id.takeLast(6),
+                days = list.sortedBy { it.date }.map { BatteryDayDto(it.date, it.outputWh, it.pvWh) },
+            )
+        }.sortedBy { order.indexOf(it.id).let { i -> if (i < 0) Int.MAX_VALUE else i } }
+        return BatteryStatsDto(series)
+    }
+
     enum class Bucket { FIVE_MIN, HOUR, DAY, MONTH }
 
     /**

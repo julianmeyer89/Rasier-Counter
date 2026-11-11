@@ -167,7 +167,8 @@ function renderBatteries(s) {
       ${row("Entladetiefe (DoD)", b.dodPercent != null ? b.dodPercent + " % (Mindestladestand " + (100 - b.dodPercent) + " %)" : "–")}
       ${row("Lademodus", chargeModeLabel(b.chargeMode))}
       ${row("Adaptiver Modus", b.adaptiveMode == null ? "–" : b.adaptiveMode ? "an" : "aus")}
-      ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh)) : ""}
+      ${b.dailyOutputWh != null ? row("Abgabe heute", KWH(b.dailyOutputWh), "battery") : ""}
+      ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh), "solar") : ""}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}
       ${row("Firmware", b.firmware || "–")}
       ${row("Aktualisiert", ago(Date.now() - b.ageSeconds * 1000))}
@@ -187,7 +188,72 @@ function renderBatteries(s) {
     }
     html += `</div>`;
   }
+  html += `<div class="card"><h2>Abgabe je Speicher</h2>
+    <div style="margin-bottom:8px">
+      <button class="sec" id="batm-output" onclick="setBatMetric('output')">Abgabe</button>
+      <button class="sec" id="batm-pv" onclick="setBatMetric('pv')">PV-Ertrag</button></div>
+    <div id="batLegend" class="chips"></div>
+    <canvas id="batChart"></canvas>
+    <input type="range" id="batSlider" min="0" max="0" value="0" oninput="onBatSlider(this.value)" style="width:100%">
+    <div id="batReadout" class="readout"></div>
+    <div class="note">Tageswerte der letzten 14 Tage aus den Zählern der Speicher. Regler ziehen für einen Tag.</div></div>`;
   document.getElementById("batteries").innerHTML = html;
+  loadBatteryStats();
+}
+
+// ---- per-battery output chart ----
+const BAT_COLORS = ["#00897b", "#6a7bd0", "#e8a33d", "#c0557a", "#4aa3df"];
+let batStats = null, batStatsFetchedMs = 0, batMetric = localStorage.getItem("batMetric") || "output", batSelected = null;
+async function loadBatteryStats(force) {
+  try {
+    if (force || !batStats || Date.now() - batStatsFetchedMs > 60000) {
+      batStats = await api("batterystats?days=14");
+      batStatsFetchedMs = Date.now();
+    }
+    drawBatteryChart();
+  } catch (e) { /* ignore */ }
+}
+function setBatMetric(m) { batMetric = m; localStorage.setItem("batMetric", m); drawBatteryChart(); }
+function onBatSlider(v) { batSelected = +v; drawBatteryChart(); }
+function batDates() {
+  const set = new Set();
+  (batStats?.series || []).forEach(s => s.days.forEach(d => set.add(d.date)));
+  return [...set].sort();
+}
+function batValue(series, date) {
+  const d = series.days.find(x => x.date === date);
+  return d ? (batMetric === "pv" ? d.pvWh : d.outputWh) : 0;
+}
+function batLabel(d) { return d.substring(8, 10) + "." + d.substring(5, 7) + "."; }
+function drawBatteryChart() {
+  const canvas = document.getElementById("batChart");
+  if (!canvas) return;
+  const series = batStats?.series || [];
+  const dates = batDates();
+  const bo = document.getElementById("batm-output"), bp = document.getElementById("batm-pv");
+  if (bo) bo.classList.toggle("on", batMetric === "output");
+  if (bp) bp.classList.toggle("on", batMetric === "pv");
+  const col = (i) => BAT_COLORS[i % BAT_COLORS.length];
+  const legend = document.getElementById("batLegend");
+  if (legend) legend.innerHTML = series.map((s, i) => {
+    const tot = s.days.reduce((a, d) => a + (batMetric === "pv" ? d.pvWh : d.outputWh), 0);
+    return `<span class="chip on" style="--c:${col(i)}"><span class="dot" style="background:${col(i)};border-color:${col(i)}"></span>${s.name}: ${KWH(tot)}</span>`;
+  }).join("");
+  const slider = document.getElementById("batSlider"), ro = document.getElementById("batReadout");
+  if (!dates.length || !series.length) {
+    if (slider) slider.max = 0;
+    if (ro) ro.innerHTML = `<div class="note">Noch keine Tagesdaten vorhanden.</div>`;
+    barChart(canvas, [], {});
+    return;
+  }
+  if (batSelected == null || batSelected > dates.length - 1) batSelected = dates.length - 1;
+  if (slider) { slider.max = dates.length - 1; slider.value = batSelected; }
+  const groups = dates.map(dt => series.map((s, i) => [col(i), batValue(s, dt) / 1000]));
+  barChart(canvas, groups, { unit: "kWh", labels: dates.map(batLabel), selected: batSelected });
+  const dt = dates[batSelected];
+  ro.innerHTML = `<div class="ro-h">${dt.substring(8, 10)}.${dt.substring(5, 7)}.${dt.substring(0, 4)}</div>` +
+    series.map((s, i) =>
+      `<span class="ro" style="color:${col(i)}"><span class="dot" style="background:${col(i)};border-color:${col(i)}"></span>${s.name}: <b style="color:${col(i)}">${KWH(batValue(s, dt))}</b></span>`).join("");
 }
 
 async function sendCmd(batteryId, type, value) {
