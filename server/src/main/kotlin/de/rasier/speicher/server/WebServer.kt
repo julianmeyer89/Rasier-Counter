@@ -55,6 +55,7 @@ class WebServer(
                     val from = query(ex, "from")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today.minusDays(6)
                     val to = query(ex, "to")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today
                     val bucket = when (query(ex, "bucket")) {
+                        "5min" -> ServerHub.Bucket.FIVE_MIN
                         "hour" -> ServerHub.Bucket.HOUR
                         "month" -> ServerHub.Bucket.MONTH
                         else -> ServerHub.Bucket.DAY

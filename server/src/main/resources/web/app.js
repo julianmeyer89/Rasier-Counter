@@ -56,29 +56,29 @@ function cardHead(title) {
 const VALUE_INFO = `
 <p class="note">Ohne DTU sind einige Werte geschätzt. Die exakten Netzwerte stehen in „Zählerbasiert“, sobald zwei Ablesungen vorliegen.</p>
 <p class="note">Die Werte sind gruppiert in <b>Verbrauch</b> (was das Haus braucht) und <b>Erzeugung</b> (was die Solaranlage liefert).</p>
+<p class="note"><b>Grundlage:</b> Wechselrichter-Abgabe = Speicherabgabe × Wirkungsgrad (höchstens die WR-Maximalleistung). Daraus folgen die übrigen Werte:</p>
 <table class="info-table">
-  <tr><th>Wert</th><th>Bedeutung</th></tr>
-  <tr><td>Hausverbrauch</td><td>Gesamtverbrauch des Hauses. Setzt sich zusammen aus „davon Solar“ und „aus dem Netz“.</td></tr>
-  <tr><td>davon Solar</td><td>Der Teil des Hausverbrauchs, der aus eigenem Solarstrom kam (nicht aus dem Netz). Grundlage der Ersparnis.</td></tr>
-  <tr><td>aus dem Netz</td><td>Der Teil des Hausverbrauchs, der aus dem Stromnetz gekauft wurde.</td></tr>
-  <tr><td>Solarertrag</td><td>Energie, die die PV-Module erzeugt haben (Summe der PV-Eingänge der Speicher).</td></tr>
-  <tr><td>Einspeisung</td><td>Überschüssiger Solarstrom, der ins Netz abgegeben wurde.</td></tr>
-  <tr><td>Autarkie</td><td>Anteil des Hausverbrauchs, der aus eigenem Solar kam („davon Solar“ ÷ Hausverbrauch).</td></tr>
-  <tr><td>Ersparnis</td><td>Wert des selbst genutzten Solarstroms: „davon Solar“ × Bezugspreis, plus Einspeisung × Einspeisevergütung.</td></tr>
+  <tr><th>Wert</th><th>Berechnung</th></tr>
+  <tr><td>Hausverbrauch</td><td>= „davon Solar“ + „aus dem Netz“</td></tr>
+  <tr><td>davon Solar</td><td>= Speicherabgabe × Wirkungsgrad − Einspeisung</td></tr>
+  <tr><td>aus dem Netz</td><td>= am CT002 gemessener Bezug</td></tr>
+  <tr><td>Solarertrag</td><td>= PV-Eingang Speicher 1 + PV-Eingang Speicher 2</td></tr>
+  <tr><td>Einspeisung</td><td>= am CT002 gemessene Einspeisung</td></tr>
+  <tr><td>Autarkie</td><td>= „davon Solar“ ÷ Hausverbrauch</td></tr>
+  <tr><td>Ersparnis</td><td>= „davon Solar“ × Bezugspreis + Einspeisung × Einspeisevergütung</td></tr>
 </table>
-<p class="note">Zusammenhang: Hausverbrauch = „davon Solar“ + „aus dem Netz“.</p>
-<p class="note">Im 24‑Stunden-Diagramm und in der Statistik-Grafik erscheint zusätzlich „Speicherabgabe“: die Energie, die die Speicher an den Wechselrichter abgegeben haben (bei diesem Aufbau fast gleich dem Solarertrag).</p>`;
+<p class="note">Im 24‑Stunden-Diagramm und in der Statistik-Grafik erscheint zusätzlich „Speicherabgabe“ = Ausgang Speicher 1 + Ausgang Speicher 2 (bei diesem Aufbau fast gleich dem Solarertrag).</p>`;
 
 const EFFICIENCY_INFO = `
 <p class="note">Der Wechselrichter wandelt den Gleichstrom der Speicher in Haushaltsstrom (Wechselstrom) um. Dabei geht ein kleiner Teil als Wärme verloren. Der Wirkungsgrad sagt, wie viel davon tatsächlich im Haus ankommt – 95 % bedeutet 5 % Verlust.</p>
 <p class="note"><b>So wird gerechnet:</b> Die Speicher melden, wie viel sie an den Wechselrichter abgeben. Die im Haus ankommende Leistung = <i>Speicherabgabe × Wirkungsgrad</i>. Dieser Wert steckt dann in allen abgeleiteten Zahlen.</p>
 <table class="info-table">
-  <tr><th>Wert</th><th>Einfluss des Wirkungsgrads</th></tr>
-  <tr><td>Wechselrichter → Haus</td><td>Direkt: Speicherabgabe × Wirkungsgrad (gedeckelt auf die WR-Maximalleistung).</td></tr>
-  <tr><td>Hausverbrauch</td><td>Höher angesetzter Wirkungsgrad → mehr angenommene Abgabe → höherer errechneter Hausverbrauch.</td></tr>
-  <tr><td>davon Solar</td><td>Steigt mit dem Wirkungsgrad (mehr Solarstrom gilt als selbst genutzt).</td></tr>
-  <tr><td>Autarkie</td><td>Folgt aus „davon Solar“ ÷ Hausverbrauch, bewegt sich also mit.</td></tr>
-  <tr><td>Ersparnis</td><td>Steigt mit dem Wirkungsgrad, soweit sie auf „davon Solar“ beruht. Der Einspeise-Anteil (Einspeisung × Vergütung) bleibt unberührt.</td></tr>
+  <tr><th>Wert</th><th>Formel (Wirkungsgrad = W)</th></tr>
+  <tr><td>Wechselrichter-Abgabe</td><td>= Speicherabgabe × W (max. WR-Leistung)</td></tr>
+  <tr><td>davon Solar</td><td>= Speicherabgabe × W − Einspeisung → steigt mit W</td></tr>
+  <tr><td>Hausverbrauch</td><td>= „davon Solar“ + „aus dem Netz“ → steigt mit W</td></tr>
+  <tr><td>Autarkie</td><td>= „davon Solar“ ÷ Hausverbrauch → steigt mit W</td></tr>
+  <tr><td>Ersparnis</td><td>= „davon Solar“ × Bezugspreis + Einspeisung × Vergütung → nur der erste Teil steigt mit W</td></tr>
 </table>
 <p class="note"><b>Nicht betroffen:</b> „aus dem Netz“ und Einspeisung werden direkt am CT002 gemessen und sind vom Wirkungsgrad unabhängig – egal, was hier eingestellt ist.</p>
 <p class="note"><b>Wann die Änderung rückwirkt:</b> Die bereits gespeicherten Tagessummen (Woche/Monat/Jahr) werden <b>nicht</b> neu berechnet – sie behalten den Wirkungsgrad, mit dem sie aufgezeichnet wurden; nur neue Messungen ab jetzt nutzen den neuen Wert. Die Stunden-Ansicht der letzten rund zwei Tage und die Werte unter „Zählerbasiert (exakt)“ werden dagegen bei jedem Aufruf neu gerechnet und übernehmen den neuen Wirkungsgrad sofort, auch rückwirkend.</p>
@@ -258,7 +258,7 @@ function nav(delta) {
 function startOfWeek(d) { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
 function computeWindow() {
   const a = statsView.anchor;
-  if (statsView.mode === "day") return { from: fmt(a), to: fmt(a), bucket: "hour", label: a.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }) };
+  if (statsView.mode === "day") return { from: fmt(a), to: fmt(a), bucket: "5min", label: a.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }) };
   if (statsView.mode === "week") { const s = startOfWeek(a), e = new Date(s); e.setDate(s.getDate() + 6); return { from: fmt(s), to: fmt(e), bucket: "day", label: deDate(s) + "–" + deDate(e) }; }
   if (statsView.mode === "month") { const s = new Date(a.getFullYear(), a.getMonth(), 1), e = new Date(a.getFullYear(), a.getMonth() + 1, 0); return { from: fmt(s), to: fmt(e), bucket: "day", label: a.toLocaleDateString("de-DE", { month: "long", year: "numeric" }) }; }
   if (statsView.mode === "year") return { from: a.getFullYear() + "-01-01", to: a.getFullYear() + "-12-31", bucket: "month", label: String(a.getFullYear()) };
@@ -281,6 +281,18 @@ function xTicksFor(labels) {
   const step = Math.max(1, Math.ceil(labels.length / 7));
   return labels.map((l, i) => ({ x: i, label: l, i })).filter(t => t.i % step === 0 || t.i === labels.length - 1);
 }
+// For the day view (labels "HH:MM") place ticks on full hours every 3 h; otherwise space evenly.
+function statsXTicks() {
+  if (statsLabels.length && /^\d\d:\d\d$/.test(statsLabels[0])) {
+    const ticks = [];
+    statsLabels.forEach((l, i) => {
+      const [h, m] = l.split(":");
+      if (m === "00" && (+h) % 3 === 0) ticks.push({ x: i, label: h + ":00" });
+    });
+    return ticks;
+  }
+  return xTicksFor(statsLabels);
+}
 function drawStatsChart() {
   const canvas = document.getElementById("statsChart");
   if (!canvas || !statsData || !statsData.length) return;
@@ -288,7 +300,7 @@ function drawStatsChart() {
   const cats = STAT_CATS.filter(c => !statsOff.has(c.key));
   if (statsChartMode === "line") {
     lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })),
-      { unit: "kWh", selected: statsSelected, xTicks: xTicksFor(statsLabels) });
+      { unit: "kWh", selected: statsSelected, xTicks: statsXTicks() });
   } else {
     barChart(canvas, statsData.map(d => cats.map(c => [c.color, c.wh(d) / 1000])),
       { unit: "kWh", labels: statsLabels, selected: statsSelected });
@@ -303,7 +315,7 @@ function updateReadout() {
   if (!d) { box.innerHTML = ""; return; }
   box.innerHTML = `<div class="ro-h">${statsLabels[statsSelected]}</div>` +
     STAT_CATS.filter(c => !statsOff.has(c.key)).map(c =>
-      `<span class="ro"><span class="dot" style="background:${c.color};border-color:${c.color}"></span>${c.label}: <b>${KWH(c.wh(d))}</b></span>`).join("");
+      `<span class="ro" style="color:${c.color}"><span class="dot" style="background:${c.color};border-color:${c.color}"></span>${c.label}: <b style="color:${c.color}">${KWH(c.wh(d))}</b></span>`).join("");
 }
 
 async function renderStats() {

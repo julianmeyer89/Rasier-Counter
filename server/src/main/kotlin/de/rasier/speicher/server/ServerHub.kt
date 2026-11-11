@@ -71,6 +71,7 @@ class ServerHub(
 
     private var lastBatteryPollMs = 0L
     private var lastMeterTimestampMs = 0L
+    private var lastHistorySampleMs = 0L
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
 
@@ -113,7 +114,12 @@ class ServerHub(
         store.saveAutomation(autoState)
         store.saveAlerts(alerts)
 
-        history = (history + snapshot.toHistoryPoint()).filter { nowMs - it.t <= HISTORY_MS }.takeLast(MAX_HISTORY)
+        // Downsample the display history to ~1 point/min so it covers days even at a fast poll rate.
+        // (Daily totals keep full poll resolution; this list only feeds the charts.)
+        if (nowMs - lastHistorySampleMs >= HISTORY_SAMPLE_MS) {
+            lastHistorySampleMs = nowMs
+            history = (history + snapshot.toHistoryPoint()).filter { nowMs - it.t <= HISTORY_MS }.takeLast(MAX_HISTORY)
+        }
         persist(nowMs)
         rebuild(nowMs)
     }
@@ -206,7 +212,7 @@ class ServerHub(
 
     fun events(): List<EventDto> = events.takeLast(100).reversed().map { EventDto(it.t, it.text) }
 
-    enum class Bucket { HOUR, DAY, MONTH }
+    enum class Bucket { FIVE_MIN, HOUR, DAY, MONTH }
 
     /**
      * Statistics for the window [from, to] (inclusive dates), aggregated into [bucket] buckets.
@@ -218,6 +224,7 @@ class ServerHub(
         val toMs = to.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
 
         val buckets: List<Pair<String, DailyEnergy>> = when (bucket) {
+            Bucket.FIVE_MIN -> fiveMinuteBuckets(from)
             Bucket.HOUR -> hourlyBuckets(from)
             // Labels in German date format: DAY -> "TT.MM.", MONTH -> "MM.JJJJ".
             Bucket.DAY -> daysIn(from, to).map { (it.date.substring(8, 10) + "." + it.date.substring(5, 7) + ".") to it }
@@ -248,6 +255,41 @@ class ServerHub(
 
     private fun daysIn(from: LocalDate, to: LocalDate): List<DailyEnergy> =
         integrator.totals.values.filter { it.date >= from.toString() && it.date <= to.toString() }.sortedBy { it.date }
+
+    /** 5-minute buckets of one day (288), integrated from the power history. Labels "HH:MM". */
+    private fun fiveMinuteBuckets(day: LocalDate): List<Pair<String, DailyEnergy>> {
+        val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        val slotMs = 5 * 60_000L
+        val slots = 288
+        val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
+        val eff = config.system.inverterEfficiency
+        val cap = config.system.inverterMaxW.toDouble()
+        fun label(slot: Int): String {
+            val minOfDay = (slot * slotMs / 60_000L).toInt()
+            return "%02d:%02d".format(minOfDay / 60, minOfDay % 60)
+        }
+        val buckets = Array(slots) { DailyEnergy(date = label(it)) }
+        for (i in 1 until points.size) {
+            val a = points[i - 1]; val b = points[i]
+            val dt = b.t - a.t
+            if (dt <= 0 || dt > 10 * 60_000L) continue
+            val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
+            val hours = dt / 3_600_000.0
+            val pvW = (a.pvW + b.pvW) / 2.0
+            val outW = (a.outW + b.outW) / 2.0
+            val acW = (outW * eff).coerceAtMost(cap)
+            val importW = (maxOf(a.gridW ?: 0, 0) + maxOf(b.gridW ?: 0, 0)) / 2.0
+            val exportW = (maxOf(-(a.gridW ?: 0), 0) + maxOf(-(b.gridW ?: 0), 0)) / 2.0
+            val houseW = (importW - exportW + acW).coerceAtLeast(0.0)
+            val selfW = (acW - exportW).coerceAtLeast(0.0)
+            buckets[slot] = buckets[slot] + DailyEnergy(
+                date = buckets[slot].date, pvWh = pvW * hours, batteryOutputWh = outW * hours,
+                inverterAcWh = acW * hours, gridImportWh = importW * hours, gridExportWh = exportW * hours,
+                houseWh = houseW * hours, selfConsumedWh = selfW * hours,
+            )
+        }
+        return buckets.map { it.date to it }
+    }
 
     /** Hourly buckets of one day, integrated from the power history (only available for recent days). */
     private fun hourlyBuckets(day: LocalDate): List<Pair<String, DailyEnergy>> {
@@ -431,8 +473,9 @@ class ServerHub(
     )
 
     companion object {
-        const val HISTORY_MS = 48 * 3_600_000L
-        const val MAX_HISTORY = 6_000
+        const val HISTORY_MS = 8 * 24 * 3_600_000L
+        const val MAX_HISTORY = 12_000
+        const val HISTORY_SAMPLE_MS = 60_000L
         const val MAX_EVENTS = 500
         const val SAVE_INTERVAL_MS = 60_000L
         const val DAY_MS = 86_400_000L
