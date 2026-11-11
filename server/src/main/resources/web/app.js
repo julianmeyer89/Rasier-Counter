@@ -67,8 +67,29 @@ const VALUE_INFO = `
 </table>
 <p class="note">Zusammenhang: Hausverbrauch = Eigenverbrauch + Netzbezug.</p>`;
 
-function openInfo() {
-  document.getElementById("infoBody").innerHTML = VALUE_INFO;
+const EFFICIENCY_INFO = `
+<p class="note">Der Wechselrichter wandelt den Gleichstrom der Speicher in Haushaltsstrom (Wechselstrom) um. Dabei geht ein kleiner Teil als Wärme verloren. Der Wirkungsgrad sagt, wie viel davon tatsächlich im Haus ankommt – 95 % bedeutet 5 % Verlust.</p>
+<p class="note"><b>So wird gerechnet:</b> Die Speicher melden, wie viel sie an den Wechselrichter abgeben. Die im Haus ankommende Leistung = <i>Speicherabgabe × Wirkungsgrad</i>. Dieser Wert steckt dann in allen abgeleiteten Zahlen.</p>
+<table class="info-table">
+  <tr><th>Wert</th><th>Einfluss des Wirkungsgrads</th></tr>
+  <tr><td>Wechselrichter-Abgabe</td><td>Direkt: Speicherabgabe × Wirkungsgrad (gedeckelt auf die WR-Maximalleistung).</td></tr>
+  <tr><td>Hausverbrauch</td><td>Höher angesetzter Wirkungsgrad → mehr angenommene Abgabe → höherer errechneter Hausverbrauch.</td></tr>
+  <tr><td>Eigenverbrauch</td><td>Steigt mit dem Wirkungsgrad (mehr Solarstrom gilt als selbst genutzt).</td></tr>
+  <tr><td>Autarkie</td><td>Folgt aus Eigenverbrauch ÷ Hausverbrauch, bewegt sich also mit.</td></tr>
+  <tr><td>Ersparnis</td><td>Basiert auf dem Eigenverbrauch, steigt daher ebenfalls mit dem Wirkungsgrad.</td></tr>
+</table>
+<p class="note"><b>Nicht betroffen:</b> Netzbezug und Einspeisung werden direkt am CT002 gemessen und sind vom Wirkungsgrad unabhängig – egal, was hier eingestellt ist.</p>
+<p class="note">Die Einstellung wirkt rückwirkend auf die gesamte Statistik, weil die gespeicherten Tageswerte bei einer Änderung neu durchgerechnet werden. Realistisch für den HMS-1600-4T sind etwa 92–96 %. Zu hoch gesetzt wirken die Werte zu optimistisch, zu niedrig zu pessimistisch.</p>`;
+
+const INFO = {
+  values: { title: "Was bedeuten die Werte?", body: VALUE_INFO },
+  efficiency: { title: "Wirkungsgrad", body: EFFICIENCY_INFO },
+};
+
+function openInfo(key) {
+  const i = INFO[key] || INFO.values;
+  document.getElementById("infoTitle").textContent = i.title;
+  document.getElementById("infoBody").innerHTML = i.body;
   document.getElementById("infoOverlay").classList.remove("hidden");
 }
 function closeInfo() { document.getElementById("infoOverlay").classList.add("hidden"); }
@@ -425,7 +446,7 @@ async function renderSettings() {
     </div>
     <div class="card"><h2>Anlage</h2>
     <label class="field">Wechselrichter max. (W)</label><input id="s_invmax" type="number" value="${s.inverterMaxW}">
-    <label class="field">Wirkungsgrad (%)</label><input id="s_eff" type="number" step="1" value="${Math.round(s.inverterEfficiencyPercent)}">
+    <label class="field">Wirkungsgrad (%) <button class="infobtn infobtn-inline" onclick="openInfo('efficiency')" title="Erklärung">i</button></label><input id="s_eff" type="number" step="1" value="${Math.round(s.inverterEfficiencyPercent)}">
     <label class="field">Abfrage CT002 (s), Minimum 0,5, in 0,1-Schritten</label><input id="s_pollct" type="number" min="0.5" step="0.1" value="${s.ct002PollIntervalSeconds}">
     <label class="field">Abfrage Speicher (s), Minimum 5</label><input id="s_pollbat" type="number" min="5" step="1" value="${s.batteryPollIntervalSeconds}">
     <div class="note">Der CT002 (Netzzähler) wird oft abgefragt für feine Live-Werte; die Speicher ändern sich langsam und werden seltener abgefragt. Empfehlung: CT002 2 s, Speicher 5 s. Werte unter 1 s gehen, erzeugen aber die meiste Dauerlast — bei Problemen zeigt die Datenqualität (Übersicht) es an, dann wieder erhöhen.</div>

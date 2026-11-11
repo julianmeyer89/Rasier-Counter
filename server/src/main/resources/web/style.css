@@ -124,6 +124,7 @@ canvas { width: 100%; height: 160px; display: block; }
   background: transparent; color: var(--muted); font-style: italic; font-weight: 700;
   cursor: pointer; line-height: 1; flex: 0 0 auto;
 }
+.infobtn-inline { width: 18px; height: 18px; font-size: 0.72rem; vertical-align: middle; margin-left: 4px; }
 .info-card { max-width: 460px; width: 100%; max-height: 86vh; overflow: auto; }
 .info-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .info-table th, .info-table td { text-align: left; vertical-align: top; padding: 6px; border-bottom: 1px solid var(--line); }
