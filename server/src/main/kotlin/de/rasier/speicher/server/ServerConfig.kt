@@ -24,7 +24,10 @@ data class ServerConfig(
     val webPort: Int,
     /** Shared secret required by the web/API (defense in depth behind Tailscale). Empty = none. */
     val authToken: String,
-    val pollIntervalSeconds: Int,
+    /** Poll interval for the CT002 smart meter (seconds). The meter changes fast; this is the loop rate. */
+    val ct002PollIntervalSeconds: Int,
+    /** Poll interval for the batteries (seconds). They change slowly, so we poll them less often. */
+    val batteryPollIntervalSeconds: Int,
     val cloudHttpIntervalSeconds: Int,
     val automationsMayWrite: Boolean,
     val useNoFlashCommands: Boolean,
@@ -62,7 +65,9 @@ data class ServerConfig(
                 dataDir = str("data_dir", "data"),
                 webPort = int("web_port", 8080),
                 authToken = str("auth_token"),
-                pollIntervalSeconds = int("poll_interval_seconds", 30),
+                // Legacy single "poll_interval_seconds" still works as the battery fallback.
+                ct002PollIntervalSeconds = int("ct002_poll_interval_seconds", 2).coerceIn(1, 3600),
+                batteryPollIntervalSeconds = int("battery_poll_interval_seconds", int("poll_interval_seconds", 5)).coerceIn(5, 3600),
                 cloudHttpIntervalSeconds = int("cloud_http_interval_seconds", 300),
                 automationsMayWrite = bool("automations_may_write", false),
                 useNoFlashCommands = bool("use_no_flash_commands", false),

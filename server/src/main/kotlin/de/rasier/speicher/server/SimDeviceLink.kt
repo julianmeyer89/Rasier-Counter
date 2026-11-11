@@ -12,7 +12,7 @@ class SimDeviceLink(zone: ZoneId = ZoneId.systemDefault()) : DeviceLink {
 
     override suspend fun connect() {}
 
-    override suspend fun poll(nowMs: Long): SystemSnapshot {
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long): SystemSnapshot {
         lastMs = nowMs
         return sim.advance(nowMs)
     }

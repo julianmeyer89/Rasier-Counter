@@ -66,7 +66,13 @@ class ServerHub(
     val state: StateFlow<StateDto> = _state
 
     val tariff: Tariff get() = config.tariff
-    val pollIntervalSeconds: Int get() = config.pollIntervalSeconds
+    val ct002PollIntervalSeconds: Int get() = config.ct002PollIntervalSeconds
+    val batteryPollIntervalSeconds: Int get() = config.batteryPollIntervalSeconds
+
+    private var lastBatteryPollMs = 0L
+    private var lastMeterTimestampMs = 0L
+    // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
+    private val meterFreshWindow = ArrayDeque<Boolean>()
 
     init {
         // Dashboard settings override the config file so they survive restarts and updates.
@@ -74,14 +80,24 @@ class ServerHub(
     }
 
     suspend fun poll(nowMs: Long = System.currentTimeMillis()) = mutex.withLock {
+        // The CT002 is polled every cycle; the batteries only when their (longer) interval has elapsed.
+        val pollBattery = nowMs - lastBatteryPollMs >= config.batteryPollIntervalSeconds * 1000L
+        val replyWaitMs = (config.ct002PollIntervalSeconds * 600L).coerceIn(500L, 1200L)
         val snapshot = try {
-            link.poll(nowMs)
+            link.poll(nowMs, pollMeter = true, pollBattery = pollBattery, replyWaitMs = replyWaitMs)
         } catch (e: Exception) {
             log("Abfrage fehlgeschlagen: ${e.message}")
             addEvents(listOf("Abfrage fehlgeschlagen: ${e.message}"), nowMs)
+            recordMeterFresh(false)
             rebuild(nowMs)
             return@withLock
         }
+        if (pollBattery) lastBatteryPollMs = nowMs
+        // A CT002 reading counts as "fresh" when its timestamp advanced since the last cycle.
+        val meterTs = snapshot.meter?.timestampMs ?: 0L
+        recordMeterFresh(meterTs > lastMeterTimestampMs)
+        if (meterTs > 0L) lastMeterTimestampMs = meterTs
+
         snapshot.batteries.forEach { lastBatteries[it.id] = it }
         snapshot.meter?.let { lastMeter = it }
         lastSnapshot = snapshot
@@ -151,7 +167,8 @@ class ServerHub(
                 inverterEfficiency = (update.inverterEfficiencyPercent / 100).coerceIn(0.5, 1.0),
                 inverterMaxW = update.inverterMaxW,
             ),
-            pollIntervalSeconds = update.pollIntervalSeconds.coerceIn(5, 3600),
+            ct002PollIntervalSeconds = update.ct002PollIntervalSeconds.coerceIn(1, 3600),
+            batteryPollIntervalSeconds = update.batteryPollIntervalSeconds.coerceIn(5, 3600),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),
@@ -175,7 +192,8 @@ class ServerHub(
         baseFeeEuroPerMonth = config.tariff.baseFeeEuroPerMonth,
         inverterEfficiencyPercent = config.system.inverterEfficiency * 100,
         inverterMaxW = config.system.inverterMaxW,
-        pollIntervalSeconds = config.pollIntervalSeconds,
+        ct002PollIntervalSeconds = config.ct002PollIntervalSeconds,
+        batteryPollIntervalSeconds = config.batteryPollIntervalSeconds,
         automationsMayWrite = config.automationsMayWrite,
         balancerEnabled = config.automation.balancer.enabled,
         calibrationIntervalDays = config.automation.calibration.intervalDays,
@@ -269,6 +287,17 @@ class ServerHub(
     }
 
     // ---- internals ----
+
+    private fun recordMeterFresh(fresh: Boolean) {
+        meterFreshWindow.addLast(fresh)
+        while (meterFreshWindow.size > METER_QUALITY_WINDOW) meterFreshWindow.removeFirst()
+    }
+
+    /** Share of recent CT002 polls that returned fresh data, or null until we have a few samples. */
+    private fun meterFreshPercent(): Int? {
+        if (meterFreshWindow.size < 5) return null
+        return (meterFreshWindow.count { it } * 100 / meterFreshWindow.size)
+    }
 
     private fun recordDeviceDays(snapshot: SystemSnapshot) {
         var days = deviceDays
@@ -384,6 +413,7 @@ class ServerHub(
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
             lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
+            meterFreshPercent = meterFreshPercent(),
         )
     }
 
@@ -406,5 +436,6 @@ class ServerHub(
         const val MAX_EVENTS = 500
         const val SAVE_INTERVAL_MS = 60_000L
         const val DAY_MS = 86_400_000L
+        const val METER_QUALITY_WINDOW = 120
     }
 }

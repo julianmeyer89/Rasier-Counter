@@ -23,6 +23,8 @@ data class StateDto(
     val suggestions: List<CommandDto>,
     /** Timestamp of the most recent meter reading, for the "since last reading" shortcut. */
     val lastMeterReadingMs: Long? = null,
+    /** Share of recent CT002 polls that returned fresh data (0–100), as a connection-quality gauge. */
+    val meterFreshPercent: Int? = null,
 )
 
 @Serializable
@@ -150,7 +152,9 @@ data class SettingsDto(
     val baseFeeEuroPerMonth: Double,
     val inverterEfficiencyPercent: Double,
     val inverterMaxW: Int,
-    val pollIntervalSeconds: Int,
+    // Defaults let settings saved before the split (single pollIntervalSeconds) still load.
+    val ct002PollIntervalSeconds: Int = 2,
+    val batteryPollIntervalSeconds: Int = 5,
     val automationsMayWrite: Boolean,
     val balancerEnabled: Boolean,
     val calibrationIntervalDays: Int,

@@ -112,9 +112,14 @@ function renderOverview(s) {
   }
   html += `<div class="card"><h2>24 Stunden</h2><canvas id="histChart"></canvas>
     <div class="legend"><span style="color:${COL.import}">Netz</span><span style="color:${COL.solar}">Solar</span><span style="color:${COL.battery}">Speicherabgabe</span></div></div>`;
+  const q = s.meterFreshPercent;
+  const qIcon = q == null ? "" : (q >= 95 ? "✅ " : q >= 80 ? "🟡 " : "⚠️ ");
+  const qRow = q == null ? "" : row(qIcon + "Datenqualität CT002", q + " %");
   html += `<div class="card"><h2>Verbindung</h2>
     ${row((s.link.connected ? "✅ " : "⚠️ ") + "Cloud", ago(s.link.lastDataMs))}
-    <div class="note">${s.link.detail}</div></div>`;
+    ${qRow}
+    <div class="note">${s.link.detail}</div>
+    ${q != null && q < 80 ? '<div class="note">Viele Abfragen bleiben ohne frische Antwort – evtl. ist das CT002-Intervall zu kurz. In den Einstellungen erhöhen.</div>' : ""}</div>`;
   document.getElementById("overview").innerHTML = html;
   loadHistory();
 }
@@ -421,8 +426,9 @@ async function renderSettings() {
     <div class="card"><h2>Anlage</h2>
     <label class="field">Wechselrichter max. (W)</label><input id="s_invmax" type="number" value="${s.inverterMaxW}">
     <label class="field">Wirkungsgrad (%)</label><input id="s_eff" type="number" step="1" value="${Math.round(s.inverterEfficiencyPercent)}">
-    <label class="field">Abfrage-Intervall (s), Minimum 5</label><input id="s_poll" type="number" min="5" value="${s.pollIntervalSeconds}">
-    <div class="note">Kleiner = häufigere Live-Werte, aber mehr Last auf der Marstek-Cloud. 5 s ist das sinnvolle Minimum; 10–30 s sind sparsam.</div>
+    <label class="field">Abfrage CT002 (s), Minimum 1</label><input id="s_pollct" type="number" min="1" value="${s.ct002PollIntervalSeconds}">
+    <label class="field">Abfrage Speicher (s), Minimum 5</label><input id="s_pollbat" type="number" min="5" value="${s.batteryPollIntervalSeconds}">
+    <div class="note">Der CT002 (Netzzähler) wird oft abgefragt für feine Live-Werte; die Speicher ändern sich langsam und werden seltener abgefragt. Empfehlung: CT002 2 s, Speicher 5 s. 1 s beim CT002 geht, erzeugt aber die meiste Dauerlast — bei Problemen zeigt die Datenqualität (Übersicht) es an, dann wieder erhöhen.</div>
     </div>
     <div class="card"><h2>Automatik</h2>
     <div class="switch"><span>Automatik darf Einstellungen ändern</span><input type="checkbox" id="s_write" ${s.automationsMayWrite ? "checked" : ""}></div>
@@ -437,7 +443,8 @@ async function renderSettings() {
 async function saveSettings() {
   const body = {
     importCentPerKwh: +v("s_import"), feedInCentPerKwh: +v("s_feed"), baseFeeEuroPerMonth: +v("s_base"),
-    inverterEfficiencyPercent: +v("s_eff"), inverterMaxW: +v("s_invmax"), pollIntervalSeconds: +v("s_poll"),
+    inverterEfficiencyPercent: +v("s_eff"), inverterMaxW: +v("s_invmax"),
+    ct002PollIntervalSeconds: +v("s_pollct"), batteryPollIntervalSeconds: +v("s_pollbat"),
     automationsMayWrite: document.getElementById("s_write").checked,
     balancerEnabled: document.getElementById("s_bal").checked,
     calibrationIntervalDays: +v("s_cal"),

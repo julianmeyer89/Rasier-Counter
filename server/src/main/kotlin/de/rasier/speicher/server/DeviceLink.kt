@@ -8,8 +8,12 @@ interface DeviceLink : AutoCloseable {
     /** Establishes the connection (or does nothing for the simulator). */
     suspend fun connect()
 
-    /** Reads one fresh snapshot of all devices. */
-    suspend fun poll(nowMs: Long): SystemSnapshot
+    /**
+     * Polls the selected device types and returns a snapshot of all known devices. Devices not polled
+     * this cycle keep their last stored value (with its original timestamp). [replyWaitMs] is how long
+     * to wait for answers before reading; the hub sizes it to the loop interval.
+     */
+    suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long): SystemSnapshot
 
     /** Sends a setting change to a battery; returns true if it was accepted. */
     suspend fun send(command: BatteryCommand): Boolean

@@ -98,14 +98,15 @@ class CloudDeviceLink(
         log("Abonniert: ${devices.size} Geräte")
     }
 
-    override suspend fun poll(nowMs: Long): SystemSnapshot = withContext(Dispatchers.IO) {
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long): SystemSnapshot = withContext(Dispatchers.IO) {
         val c = client ?: throw IllegalStateException("Nicht verbunden")
-        devices.forEach {
+        // Poll only the selected device types; unpolled devices keep their last stored value below.
+        devices.filter { (it.isBattery && pollBattery) || (!it.isBattery && pollMeter) }.forEach {
             c.publishWith().topic(it.topics.command).qos(MqttQos.AT_MOST_ONCE)
                 .payload(CloudPayloads.POLL_RUNTIME.toByteArray(Charsets.US_ASCII)).send()
         }
         // Give the devices a moment to answer on their status topics.
-        delay(1200)
+        delay(replyWaitMs.coerceIn(200, 2000))
 
         val batteries = mutableListOf<BatteryState>()
         var meter: MeterReading? = null

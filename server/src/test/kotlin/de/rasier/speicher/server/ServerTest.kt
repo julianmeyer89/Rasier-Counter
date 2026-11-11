@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 
 private fun demoConfig(dir: File, write: Boolean = true) = ServerConfig(
     demo = true, cloudBaseUrl = "", email = "", passwordMd5 = "", certDir = "certs", brokerUrl = null,
-    dataDir = dir.path, webPort = 0, authToken = "", pollIntervalSeconds = 30, cloudHttpIntervalSeconds = 300,
+    dataDir = dir.path, webPort = 0, authToken = "", ct002PollIntervalSeconds = 2, batteryPollIntervalSeconds = 5, cloudHttpIntervalSeconds = 300,
     automationsMayWrite = write, useNoFlashCommands = false, debug = false,
     tariff = Tariff(30.0, 8.0), system = SystemConfig(),
     automation = AutomationSettings(calibration = CalibrationSettings(holdFullMinutes = 30, holdEmptyMinutes = 10, intervalDays = 0)),
@@ -67,13 +67,16 @@ class ServerHubTest {
     fun `dashboard settings survive a restart`() = runTest {
         val dir = Files.createTempDirectory("srv").toFile()
         val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
-        val changed = hub.settingsDto().copy(importCentPerKwh = 42.5, pollIntervalSeconds = 15, automationsMayWrite = true)
+        val changed = hub.settingsDto().copy(
+            importCentPerKwh = 42.5, ct002PollIntervalSeconds = 3, batteryPollIntervalSeconds = 15, automationsMayWrite = true,
+        )
         hub.updateSettings(changed)
 
         // A fresh hub (as after an update/restart) must read the saved settings, not the config file.
         val again = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
         assertEquals(42.5, again.settingsDto().importCentPerKwh, 1e-9)
-        assertEquals(15, again.settingsDto().pollIntervalSeconds)
+        assertEquals(3, again.settingsDto().ct002PollIntervalSeconds)
+        assertEquals(15, again.settingsDto().batteryPollIntervalSeconds)
         assertTrue(again.settingsDto().automationsMayWrite)
     }
 }

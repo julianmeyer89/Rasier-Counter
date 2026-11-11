@@ -28,8 +28,10 @@ web_port=8080
 # Zusätzlicher Schutz neben Tailscale (leer = keiner):
 auth_token=
 
-# Abfrage-Intervall in Sekunden
-poll_interval_seconds=30
+# Abfrage-Intervalle in Sekunden: CT002 (Netzzähler) oft, Speicher seltener.
+# Lassen sich auch in der Weboberfläche unter Einstellungen ändern.
+ct002_poll_interval_seconds=2
+battery_poll_interval_seconds=5
 
 # Automatik darf Einstellungen am Speicher ändern (Kalibrierung, Ausgleich).
 # Zu Beginn false lassen und erst einschalten, wenn die Werte stimmen.
