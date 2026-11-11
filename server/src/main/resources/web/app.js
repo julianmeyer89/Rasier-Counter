@@ -55,31 +55,34 @@ function cardHead(title) {
 
 const VALUE_INFO = `
 <p class="note">Ohne DTU sind einige Werte geschätzt. Die exakten Netzwerte stehen in „Zählerbasiert“, sobald zwei Ablesungen vorliegen.</p>
+<p class="note">Die Werte sind gruppiert in <b>Verbrauch</b> (was das Haus braucht) und <b>Erzeugung</b> (was die Solaranlage liefert).</p>
 <table class="info-table">
   <tr><th>Wert</th><th>Bedeutung</th></tr>
+  <tr><td>Hausverbrauch</td><td>Gesamtverbrauch des Hauses. Setzt sich zusammen aus „davon Solar“ und „aus dem Netz“.</td></tr>
+  <tr><td>davon Solar</td><td>Der Teil des Hausverbrauchs, der aus eigenem Solarstrom kam (nicht aus dem Netz). Grundlage der Ersparnis.</td></tr>
+  <tr><td>aus dem Netz</td><td>Der Teil des Hausverbrauchs, der aus dem Stromnetz gekauft wurde.</td></tr>
   <tr><td>Solarertrag</td><td>Energie, die die PV-Module erzeugt haben (Summe der PV-Eingänge der Speicher).</td></tr>
-  <tr><td>Speicherabgabe</td><td>Energie, die die Speicher an den Wechselrichter abgegeben haben. Bei diesem Aufbau fast gleich dem Solarertrag.</td></tr>
-  <tr><td>Hausverbrauch</td><td>Gesamtverbrauch des Hauses = Netzbezug − Einspeisung + Wechselrichter-Abgabe.</td></tr>
-  <tr><td>Eigenverbrauch</td><td>Solarstrom, den das Haus selbst genutzt hat (nicht eingespeist). Grundlage der Ersparnis.</td></tr>
-  <tr><td>Netzbezug</td><td>Aus dem Netz gekaufter Strom.</td></tr>
-  <tr><td>Einspeisung</td><td>Ins Netz abgegebener Strom.</td></tr>
-  <tr><td>Autarkie</td><td>Anteil des Hausverbrauchs, der aus eigenem Solar kam (Eigenverbrauch ÷ Hausverbrauch).</td></tr>
+  <tr><td>Einspeisung</td><td>Überschüssiger Solarstrom, der ins Netz abgegeben wurde.</td></tr>
+  <tr><td>Autarkie</td><td>Anteil des Hausverbrauchs, der aus eigenem Solar kam („davon Solar“ ÷ Hausverbrauch).</td></tr>
+  <tr><td>Ersparnis</td><td>Wert des selbst genutzten Solarstroms: „davon Solar“ × Bezugspreis, plus Einspeisung × Einspeisevergütung.</td></tr>
 </table>
-<p class="note">Zusammenhang: Hausverbrauch = Eigenverbrauch + Netzbezug.</p>`;
+<p class="note">Zusammenhang: Hausverbrauch = „davon Solar“ + „aus dem Netz“.</p>
+<p class="note">Im 24‑Stunden-Diagramm und in der Statistik-Grafik erscheint zusätzlich „Speicherabgabe“: die Energie, die die Speicher an den Wechselrichter abgegeben haben (bei diesem Aufbau fast gleich dem Solarertrag).</p>`;
 
 const EFFICIENCY_INFO = `
 <p class="note">Der Wechselrichter wandelt den Gleichstrom der Speicher in Haushaltsstrom (Wechselstrom) um. Dabei geht ein kleiner Teil als Wärme verloren. Der Wirkungsgrad sagt, wie viel davon tatsächlich im Haus ankommt – 95 % bedeutet 5 % Verlust.</p>
 <p class="note"><b>So wird gerechnet:</b> Die Speicher melden, wie viel sie an den Wechselrichter abgeben. Die im Haus ankommende Leistung = <i>Speicherabgabe × Wirkungsgrad</i>. Dieser Wert steckt dann in allen abgeleiteten Zahlen.</p>
 <table class="info-table">
   <tr><th>Wert</th><th>Einfluss des Wirkungsgrads</th></tr>
-  <tr><td>Wechselrichter-Abgabe</td><td>Direkt: Speicherabgabe × Wirkungsgrad (gedeckelt auf die WR-Maximalleistung).</td></tr>
+  <tr><td>Wechselrichter → Haus</td><td>Direkt: Speicherabgabe × Wirkungsgrad (gedeckelt auf die WR-Maximalleistung).</td></tr>
   <tr><td>Hausverbrauch</td><td>Höher angesetzter Wirkungsgrad → mehr angenommene Abgabe → höherer errechneter Hausverbrauch.</td></tr>
-  <tr><td>Eigenverbrauch</td><td>Steigt mit dem Wirkungsgrad (mehr Solarstrom gilt als selbst genutzt).</td></tr>
-  <tr><td>Autarkie</td><td>Folgt aus Eigenverbrauch ÷ Hausverbrauch, bewegt sich also mit.</td></tr>
-  <tr><td>Ersparnis</td><td>Basiert auf dem Eigenverbrauch, steigt daher ebenfalls mit dem Wirkungsgrad.</td></tr>
+  <tr><td>davon Solar</td><td>Steigt mit dem Wirkungsgrad (mehr Solarstrom gilt als selbst genutzt).</td></tr>
+  <tr><td>Autarkie</td><td>Folgt aus „davon Solar“ ÷ Hausverbrauch, bewegt sich also mit.</td></tr>
+  <tr><td>Ersparnis</td><td>Steigt mit dem Wirkungsgrad, soweit sie auf „davon Solar“ beruht. Der Einspeise-Anteil (Einspeisung × Vergütung) bleibt unberührt.</td></tr>
 </table>
-<p class="note"><b>Nicht betroffen:</b> Netzbezug und Einspeisung werden direkt am CT002 gemessen und sind vom Wirkungsgrad unabhängig – egal, was hier eingestellt ist.</p>
-<p class="note">Die Einstellung wirkt rückwirkend auf die gesamte Statistik, weil die gespeicherten Tageswerte bei einer Änderung neu durchgerechnet werden. Realistisch für den HMS-1600-4T sind etwa 92–96 %. Zu hoch gesetzt wirken die Werte zu optimistisch, zu niedrig zu pessimistisch.</p>`;
+<p class="note"><b>Nicht betroffen:</b> „aus dem Netz“ und Einspeisung werden direkt am CT002 gemessen und sind vom Wirkungsgrad unabhängig – egal, was hier eingestellt ist.</p>
+<p class="note"><b>Wann die Änderung rückwirkt:</b> Die bereits gespeicherten Tagessummen (Woche/Monat/Jahr) werden <b>nicht</b> neu berechnet – sie behalten den Wirkungsgrad, mit dem sie aufgezeichnet wurden; nur neue Messungen ab jetzt nutzen den neuen Wert. Die Stunden-Ansicht der letzten rund zwei Tage und die Werte unter „Zählerbasiert (exakt)“ werden dagegen bei jedem Aufruf neu gerechnet und übernehmen den neuen Wirkungsgrad sofort, auch rückwirkend.</p>
+<p class="note">Realistisch für den HMS-1600-4T sind etwa 92–96 %. Zu hoch gesetzt wirken die Werte zu optimistisch, zu niedrig zu pessimistisch.</p>`;
 
 const INFO = {
   values: { title: "Was bedeuten die Werte?", body: VALUE_INFO },
