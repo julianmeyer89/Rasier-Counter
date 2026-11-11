@@ -196,6 +196,7 @@ function renderBatteries(s) {
     <div style="margin-bottom:8px">
       <button class="sec ${batChartMode === "bar" ? "on" : ""}" onclick="setBatChartMode('bar')">Balken</button>
       <button class="sec ${batChartMode === "line" ? "on" : ""}" onclick="setBatChartMode('line')">Linie</button></div>
+    <div id="batWho" class="chips"></div>
     <div id="batChips" class="chips"></div>
     <canvas id="batChart"></canvas>
     <input type="range" id="batSlider" min="0" max="0" value="0" oninput="onBatSlider(this.value)" style="width:100%">
@@ -212,13 +213,15 @@ const BAT_METRICS = [
   { key: "pv", label: "PV", field: "pv" },
   { key: "output", label: "Abgabe", field: "output" },
 ];
-// One colour family per battery (teal, indigo, …), one shade per metric.
-const BAT_PALETTE = ["#00897b", "#26a69a", "#80cbc4", "#4db6ac", "#3949ab", "#5c6bc0", "#9fa8da", "#7986cb", "#e8a33d", "#c0557a"];
+// Distinct hues, assigned per visible series in order (like the statistics chart).
+const BAT_PALETTE = ["#1565c0", "#ef6c00", "#2e7d32", "#c62828", "#6a1b9a", "#00838f", "#f9a825", "#ad1457"];
 let batView = { mode: localStorage.getItem("batMode") || "week", anchor: new Date() };
-let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetrics") || '["discharge","charge"]'));
+// Default to metrics that already have history ("Abgabe") plus the new "Entladung"; a fresh key
+// so earlier visitors get the better default instead of the old all-empty charge/discharge pair.
+let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetricsV2") || '["discharge","output"]'));
+let batHidden = new Set(JSON.parse(localStorage.getItem("batHidden") || "[]"));
 let batChartMode = localStorage.getItem("batChartMode") || "bar";
 let batData = null, batKey = "", batSelected = null;
-const batColor = (bi, mi) => BAT_PALETTE[(bi * BAT_METRICS.length + mi) % BAT_PALETTE.length];
 
 function computeBatWindow() {
   const a = batView.anchor;
@@ -239,7 +242,11 @@ function batNav(d) {
 function setBatChartMode(m) { batChartMode = m; localStorage.setItem("batChartMode", m); renderBatteries(lastState); }
 function toggleBatMetric(k) {
   if (batMetrics.has(k)) batMetrics.delete(k); else batMetrics.add(k);
-  localStorage.setItem("batMetrics", JSON.stringify([...batMetrics])); drawBatteryChart();
+  localStorage.setItem("batMetricsV2", JSON.stringify([...batMetrics])); drawBatteryChart();
+}
+function toggleBat(id) {
+  if (batHidden.has(id)) batHidden.delete(id); else batHidden.add(id);
+  localStorage.setItem("batHidden", JSON.stringify([...batHidden])); drawBatteryChart();
 }
 function onBatSlider(v) { batSelected = +v; drawBatteryChart(); }
 async function loadBatteryStats(force) {
@@ -256,16 +263,22 @@ async function loadBatteryStats(force) {
 }
 function batSeriesList() {
   const out = [];
-  (batData?.series || []).forEach((b, bi) => BAT_METRICS.forEach((m, mi) => {
-    if (batMetrics.has(m.key)) out.push({ color: batColor(bi, mi), label: `${b.name} ${m.label}`, values: b[m.field] || [] });
+  (batData?.series || []).filter(b => !batHidden.has(b.id)).forEach(b => BAT_METRICS.forEach(m => {
+    if (batMetrics.has(m.key)) out.push({ label: `${b.name} ${m.label}`, values: b[m.field] || [] });
   }));
+  out.forEach((s, i) => s.color = BAT_PALETTE[i % BAT_PALETTE.length]);
   return out;
 }
 function renderBatChips() {
-  const box = document.getElementById("batChips"); if (!box) return;
-  box.innerHTML = BAT_METRICS.map((m, mi) => {
-    const on = batMetrics.has(m.key), c = batColor(0, mi);
-    return `<button class="chip ${on ? "on" : ""}" style="${on ? `--c:${c}` : ""}" onclick="toggleBatMetric('${m.key}')"><span class="dot" style="background:${on ? c : "transparent"};border-color:${c}"></span>${m.label}</button>`;
+  const mbox = document.getElementById("batChips");
+  if (mbox) mbox.innerHTML = BAT_METRICS.map(m => {
+    const on = batMetrics.has(m.key);
+    return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBatMetric('${m.key}')">${m.label}</button>`;
+  }).join("");
+  const wbox = document.getElementById("batWho"), bats = batData?.series || [];
+  if (wbox) wbox.innerHTML = bats.length <= 1 ? "" : bats.map(b => {
+    const on = !batHidden.has(b.id);
+    return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBat('${b.id}')">${b.name}</button>`;
   }).join("");
 }
 function drawBatteryChart() {
