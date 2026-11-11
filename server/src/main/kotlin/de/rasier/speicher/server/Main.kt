@@ -13,6 +13,23 @@ fun main(args: Array<String>) {
     val config = ServerConfig.load(configFile)
     val log: (String) -> Unit = { println("[${java.time.LocalTime.now().withNano(0)}] $it") }
 
+    // Diagnostic probe mode: `server <config> probe [ct002|battery] [intervalSec] [durationSec]`.
+    // Measures how cleanly a given poll interval is received. Changes nothing; exits when done.
+    if (args.any { it == "probe" }) {
+        val rest = args.dropWhile { it != "probe" }.drop(1)
+        val onlyMeter = rest.getOrNull(0)?.lowercase() != "battery"
+        val intervalMs = ((rest.getOrNull(1)?.toDoubleOrNull() ?: 2.0) * 1000).toLong()
+        val durationS = rest.getOrNull(2)?.toLongOrNull() ?: 300
+        val link = CloudDeviceLink(config, log)
+        runBlocking {
+            log("PROBE-Modus (${if (onlyMeter) "CT002" else "Speicher"}). Verbinde…")
+            link.connect()
+            link.probe(onlyMeter, intervalMs, durationS * 1000)
+            link.close()
+        }
+        return
+    }
+
     log("Rasier Speicher Server startet (${if (config.demo) "Demo" else "Live"})")
 
     val link: DeviceLink = if (config.demo) SimDeviceLink() else CloudDeviceLink(config, log)

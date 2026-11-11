@@ -134,6 +134,62 @@ class CloudDeviceLink(
         true
     }
 
+    /**
+     * Diagnostic probe: polls only the chosen device type at [intervalMs] for [durationMs] and logs,
+     * per cycle, whether a fresh reply arrived and the measured grid power. Prints a summary. Used to
+     * check empirically how low the poll interval can go before replies start to drop. Read-only in
+     * the sense that it changes nothing in the running system; it does publish cd=1 (a normal poll).
+     */
+    suspend fun probe(onlyMeter: Boolean, intervalMs: Long, durationMs: Long) = withContext(Dispatchers.IO) {
+        val sel = devices.filter { if (onlyMeter) !it.isBattery else it.isBattery }
+        if (sel.isEmpty()) { log("Keine passenden Geräte gefunden."); return@withContext }
+        log("PROBE: ${sel.joinToString { it.name }}, Intervall ${intervalMs} ms, Dauer ${durationMs / 1000} s")
+        val c = client ?: run { log("Nicht verbunden."); return@withContext }
+
+        val lastReplyMs = HashMap<String, Long>()
+        var cycles = 0
+        var fresh = 0
+        val gaps = ArrayList<Long>()
+        val end = System.currentTimeMillis() + durationMs
+
+        while (System.currentTimeMillis() < end) {
+            val prev = sel.associate { it.topics.status to (latest[it.topics.status]?.second ?: 0L) }
+            sel.forEach {
+                c.publishWith().topic(it.topics.command).qos(MqttQos.AT_MOST_ONCE)
+                    .payload(CloudPayloads.POLL_RUNTIME.toByteArray(Charsets.US_ASCII)).send()
+            }
+            delay(intervalMs)
+            cycles++
+            for (d in sel) {
+                val e = latest[d.topics.status]
+                val got = e != null && e.second > (prev[d.topics.status] ?: 0L)
+                if (got) {
+                    fresh++
+                    val f = CloudPayloads.parseFields(e!!.first)
+                    val m = CloudPayloads.parseMeter(f, e.second)
+                    val lr = lastReplyMs[d.topics.status]
+                    val gap = if (lr != null) e.second - lr else -1
+                    if (lr != null) gaps.add(gap)
+                    lastReplyMs[d.topics.status] = e.second
+                    val vals = if (m != null) "pwr_a=${m.phaseW.getOrElse(0){0}},pwr_b=${m.phaseW.getOrElse(1){0}},pwr_c=${m.phaseW.getOrElse(2){0}},pwr_t=${m.totalW}" else "(keine Messwerte)"
+                    log("  [${d.name}] frisch ✓  Abstand ${if (gap < 0) "-" else "$gap ms"}  $vals")
+                } else {
+                    log("  [${d.name}] keine frische Antwort in dieser Runde")
+                }
+            }
+        }
+        val expected = cycles * sel.size
+        val rate = if (expected > 0) fresh * 100.0 / expected else 0.0
+        val gMin = gaps.minOrNull() ?: 0
+        val gMax = gaps.maxOrNull() ?: 0
+        val gAvg = if (gaps.isNotEmpty()) gaps.average().toLong() else 0
+        log("")
+        log("== PROBE-ZUSAMMENFASSUNG ==")
+        log("Runden: $cycles   erwartete Antworten: $expected   frische: $fresh   Erfolgsquote: ${"%.1f".format(rate)} %")
+        log("Abstand frische Antworten: min ${gMin} ms, Ø ${gAvg} ms, max ${gMax} ms")
+        log(if (rate >= 95.0) "Ergebnis: sauber bei ${intervalMs} ms." else "Ergebnis: Antworten fallen aus – Intervall zu kurz oder Cloud träge.")
+    }
+
     override fun close() {
         connected = false
         runCatching { client?.disconnect() }
