@@ -17,7 +17,8 @@ echo "Repository : $REPO_DIR"
 echo "Dienst-User: $RUN_USER ($USER_HOME)"
 echo "Konfig     : $CONFIG"
 [ -f "$CONFIG" ] || { echo "FEHLER: $CONFIG nicht gefunden. Erst den Server einrichten."; exit 1; }
-systemctl list-unit-files | grep -q "^${SERVICE}.service" || { echo "FEHLER: Dienst '$SERVICE' nicht installiert."; exit 1; }
+# `systemctl cat` succeeds only if the unit exists; avoids the pipefail+SIGPIPE pitfall of a grep pipe.
+systemctl cat "$SERVICE" >/dev/null 2>&1 || { echo "FEHLER: Dienst '$SERVICE' nicht installiert."; exit 1; }
 
 echo "== Pakete sicherstellen =="
 apt-get update -qq
