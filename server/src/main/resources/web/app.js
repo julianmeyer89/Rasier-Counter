@@ -177,7 +177,8 @@ function renderBatteries(s) {
       <input type="range" min="0" max="100" value="${b.dodPercent ?? 90}" oninput="document.getElementById('dodv-${b.id}').textContent=this.value" id="dod-${b.id}">
       <button class="sec" onclick="sendCmd('${b.id}','dod',+document.getElementById('dod-${b.id}').value)">DoD setzen</button>
       <button class="sec" onclick="sendCmd('${b.id}','chargeMode', ${b.chargeMode === "CHARGE_THEN_DISCHARGE" ? 0 : 1})">Lademodus wechseln</button>
-      ${b.adaptiveMode === false ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',1)">Adaptiven Modus an</button>` : ""}
+      ${b.adaptiveMode === true ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',0)">Auf Manuell (Zeitplan)</button>` : ""}
+      ${b.adaptiveMode === false ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',1)">Auf Automatik</button>` : ""}
     </div>`;
   }
   if (s.suggestions && s.suggestions.length) {

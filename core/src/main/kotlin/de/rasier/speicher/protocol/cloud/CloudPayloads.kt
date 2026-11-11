@@ -84,10 +84,11 @@ object CloudPayloads {
             }
             "cd=${if (noFlash) 17 else 3},md=$md"
         }
-        is BatteryCommand.SetAdaptiveMode -> {
-            require(command.enabled) { "Adaptiver Modus wird nur eingeschaltet; Ausschalten erfolgt über Zeitpläne" }
-            "cd=${if (noFlash) 18 else 4},md=1"
-        }
+        is BatteryCommand.SetAdaptiveMode ->
+            // md=1 = Selbstanpassung/Automodus; md=0 = Manuell, dann läuft der in der Marstek-App
+            // gesetzte Zeitplan. Die Manuell-Richtung ist über die Cloud noch nicht verifiziert –
+            // am echten Gerät bestätigen, bevor die Kalibrierung sich darauf verlässt.
+            "cd=${if (noFlash) 18 else 4},md=${if (command.enabled) 1 else 0}"
     }
 
     private fun Map<String, String>.int(key: String): Int? = this[key]?.trim()?.toIntOrNull()
