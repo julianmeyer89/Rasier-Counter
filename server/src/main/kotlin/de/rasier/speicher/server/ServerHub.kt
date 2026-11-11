@@ -66,7 +66,7 @@ class ServerHub(
     val state: StateFlow<StateDto> = _state
 
     val tariff: Tariff get() = config.tariff
-    val ct002PollIntervalSeconds: Int get() = config.ct002PollIntervalSeconds
+    val ct002PollIntervalSeconds: Double get() = config.ct002PollIntervalSeconds
     val batteryPollIntervalSeconds: Int get() = config.batteryPollIntervalSeconds
 
     private var lastBatteryPollMs = 0L
@@ -82,7 +82,7 @@ class ServerHub(
     suspend fun poll(nowMs: Long = System.currentTimeMillis()) = mutex.withLock {
         // The CT002 is polled every cycle; the batteries only when their (longer) interval has elapsed.
         val pollBattery = nowMs - lastBatteryPollMs >= config.batteryPollIntervalSeconds * 1000L
-        val replyWaitMs = (config.ct002PollIntervalSeconds * 600L).coerceIn(500L, 1200L)
+        val replyWaitMs = (config.ct002PollIntervalSeconds * 600).toLong().coerceIn(300L, 1200L)
         val snapshot = try {
             link.poll(nowMs, pollMeter = true, pollBattery = pollBattery, replyWaitMs = replyWaitMs)
         } catch (e: Exception) {
@@ -167,7 +167,7 @@ class ServerHub(
                 inverterEfficiency = (update.inverterEfficiencyPercent / 100).coerceIn(0.5, 1.0),
                 inverterMaxW = update.inverterMaxW,
             ),
-            ct002PollIntervalSeconds = update.ct002PollIntervalSeconds.coerceIn(1, 3600),
+            ct002PollIntervalSeconds = update.ct002PollIntervalSeconds.coerceIn(0.5, 3600.0),
             batteryPollIntervalSeconds = update.batteryPollIntervalSeconds.coerceIn(5, 3600),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(

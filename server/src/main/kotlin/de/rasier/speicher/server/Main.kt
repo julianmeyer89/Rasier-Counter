@@ -61,7 +61,7 @@ fun main(args: Array<String>) {
             runCatching { hub.poll() }.onFailure { log("Abfragefehler: ${it.message}") }
             // The loop runs at the CT002 rate; the hub polls the batteries on their own longer interval.
             // Read it each round so a change in the settings takes effect live.
-            val interval = hub.ct002PollIntervalSeconds.coerceIn(1, 3600) * 1000L
+            val interval = (hub.ct002PollIntervalSeconds.coerceIn(0.5, 3600.0) * 1000).toLong()
             delay((interval - (System.currentTimeMillis() - started)).coerceAtLeast(200))
         }
     }

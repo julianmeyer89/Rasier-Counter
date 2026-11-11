@@ -29,6 +29,7 @@ web_port=8080
 auth_token=
 
 # Abfrage-Intervalle in Sekunden: CT002 (Netzzähler) oft, Speicher seltener.
+# Der CT002-Wert darf eine Kommazahl sein (z. B. 1.5), Minimum 0.5.
 # Lassen sich auch in der Weboberfläche unter Einstellungen ändern.
 ct002_poll_interval_seconds=2
 battery_poll_interval_seconds=5

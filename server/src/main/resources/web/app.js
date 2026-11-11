@@ -426,9 +426,9 @@ async function renderSettings() {
     <div class="card"><h2>Anlage</h2>
     <label class="field">Wechselrichter max. (W)</label><input id="s_invmax" type="number" value="${s.inverterMaxW}">
     <label class="field">Wirkungsgrad (%)</label><input id="s_eff" type="number" step="1" value="${Math.round(s.inverterEfficiencyPercent)}">
-    <label class="field">Abfrage CT002 (s), Minimum 1</label><input id="s_pollct" type="number" min="1" value="${s.ct002PollIntervalSeconds}">
-    <label class="field">Abfrage Speicher (s), Minimum 5</label><input id="s_pollbat" type="number" min="5" value="${s.batteryPollIntervalSeconds}">
-    <div class="note">Der CT002 (Netzzähler) wird oft abgefragt für feine Live-Werte; die Speicher ändern sich langsam und werden seltener abgefragt. Empfehlung: CT002 2 s, Speicher 5 s. 1 s beim CT002 geht, erzeugt aber die meiste Dauerlast — bei Problemen zeigt die Datenqualität (Übersicht) es an, dann wieder erhöhen.</div>
+    <label class="field">Abfrage CT002 (s), Minimum 0,5, in 0,1-Schritten</label><input id="s_pollct" type="number" min="0.5" step="0.1" value="${s.ct002PollIntervalSeconds}">
+    <label class="field">Abfrage Speicher (s), Minimum 5</label><input id="s_pollbat" type="number" min="5" step="1" value="${s.batteryPollIntervalSeconds}">
+    <div class="note">Der CT002 (Netzzähler) wird oft abgefragt für feine Live-Werte; die Speicher ändern sich langsam und werden seltener abgefragt. Empfehlung: CT002 2 s, Speicher 5 s. Werte unter 1 s gehen, erzeugen aber die meiste Dauerlast — bei Problemen zeigt die Datenqualität (Übersicht) es an, dann wieder erhöhen.</div>
     </div>
     <div class="card"><h2>Automatik</h2>
     <div class="switch"><span>Automatik darf Einstellungen ändern</span><input type="checkbox" id="s_write" ${s.automationsMayWrite ? "checked" : ""}></div>

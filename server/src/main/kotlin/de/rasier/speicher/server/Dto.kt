@@ -153,7 +153,7 @@ data class SettingsDto(
     val inverterEfficiencyPercent: Double,
     val inverterMaxW: Int,
     // Defaults let settings saved before the split (single pollIntervalSeconds) still load.
-    val ct002PollIntervalSeconds: Int = 2,
+    val ct002PollIntervalSeconds: Double = 2.0,
     val batteryPollIntervalSeconds: Int = 5,
     val automationsMayWrite: Boolean,
     val balancerEnabled: Boolean,
