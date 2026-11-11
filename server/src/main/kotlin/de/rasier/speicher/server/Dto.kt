@@ -172,6 +172,8 @@ data class BatterySeriesDto(
     val discharge: List<Int>,
     val pv: List<Int>,
     val output: List<Int>,
+    /** State of charge per bucket in %, -1 where no data (only filled for the 5-minute day view). */
+    val soc: List<Int> = emptyList(),
 )
 
 @Serializable

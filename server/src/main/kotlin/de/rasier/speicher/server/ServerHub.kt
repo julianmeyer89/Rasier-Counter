@@ -239,21 +239,37 @@ class ServerHub(
                 discharge = keys.map { k -> byKey[k]?.sumOf { it.dischargeWh } ?: 0 },
                 pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 },
                 output = keys.map { k -> byKey[k]?.sumOf { it.outputWh } ?: 0 },
+                soc = keys.map { -1 },
             )
         }
         return BatteryStatsDto(if (monthly) Bucket.MONTH.name else Bucket.DAY.name, labels, series)
     }
 
-    /** 5-minute per-battery energy of one day, integrated from the per-battery power history. */
+    /**
+     * 5-minute per-battery data of one day from the power history. Charge/discharge come from the
+     * state-of-charge changes (times the battery capacity), which the history has reliably, so a day's
+     * charging shows even when per-battery power history is sparse. PV/output come from the per-battery
+     * power history (may be empty for older points). [soc] is the average state of charge per slot.
+     */
     private fun batteryFiveMinute(day: LocalDate): BatteryStatsDto {
         val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
         val slotMs = 5 * 60_000L; val slots = 288
         val ids = link.batteryIds
+        val caps = ids.map { lastBatteries[it]?.capacityWh ?: 0 }
         val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
         val charge = Array(ids.size) { DoubleArray(slots) }
         val discharge = Array(ids.size) { DoubleArray(slots) }
         val pv = Array(ids.size) { DoubleArray(slots) }
         val output = Array(ids.size) { DoubleArray(slots) }
+        val socSum = Array(ids.size) { DoubleArray(slots) }
+        val socCnt = Array(ids.size) { IntArray(slots) }
+        for (p in points) {
+            val slot = ((p.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
+            for (idx in ids.indices) {
+                val s = p.soc.getOrNull(idx) ?: continue
+                socSum[idx][slot] += s; socCnt[idx][slot]++
+            }
+        }
         for (i in 1 until points.size) {
             val a = points[i - 1]; val b = points[i]
             val dt = b.t - a.t
@@ -261,15 +277,19 @@ class ServerHub(
             val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
             val hours = dt / 3_600_000.0
             for (idx in ids.indices) {
-                val apv = a.batPvW.getOrNull(idx) ?: continue
-                val aout = a.batOutW.getOrNull(idx) ?: 0
-                val bpv = b.batPvW.getOrNull(idx) ?: 0
-                val bout = b.batOutW.getOrNull(idx) ?: 0
-                val netA = apv - aout; val netB = bpv - bout
-                pv[idx][slot] += (apv + bpv) / 2.0 * hours
-                output[idx][slot] += (aout + bout) / 2.0 * hours
-                charge[idx][slot] += (maxOf(netA, 0) + maxOf(netB, 0)) / 2.0 * hours
-                discharge[idx][slot] += (maxOf(-netA, 0) + maxOf(-netB, 0)) / 2.0 * hours
+                // Charge/discharge from the SOC change times capacity (robust, always in the history).
+                val sa = a.soc.getOrNull(idx); val sb = b.soc.getOrNull(idx)
+                if (sa != null && sb != null && caps[idx] > 0) {
+                    val dE = (sb - sa) / 100.0 * caps[idx]
+                    if (dE >= 0) charge[idx][slot] += dE else discharge[idx][slot] += -dE
+                }
+                // PV/output from per-battery power history, if present.
+                val apv = a.batPvW.getOrNull(idx); val bpv = b.batPvW.getOrNull(idx)
+                if (apv != null && bpv != null) {
+                    pv[idx][slot] += (apv + bpv) / 2.0 * hours
+                    val aout = a.batOutW.getOrNull(idx) ?: 0; val bout = b.batOutW.getOrNull(idx) ?: 0
+                    output[idx][slot] += (aout + bout) / 2.0 * hours
+                }
             }
         }
         val labels = (0 until slots).map {
@@ -282,6 +302,7 @@ class ServerHub(
                 discharge = discharge[idx].map { it.roundToInt() },
                 pv = pv[idx].map { it.roundToInt() },
                 output = output[idx].map { it.roundToInt() },
+                soc = (0 until slots).map { if (socCnt[idx][it] > 0) (socSum[idx][it] / socCnt[idx][it]).roundToInt() else -1 },
             )
         }
         return BatteryStatsDto(Bucket.FIVE_MIN.name, labels, series)

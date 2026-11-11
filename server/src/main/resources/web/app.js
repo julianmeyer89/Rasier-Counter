@@ -201,9 +201,16 @@ function renderBatteries(s) {
     <canvas id="batChart"></canvas>
     <input type="range" id="batSlider" min="0" max="0" value="0" oninput="onBatSlider(this.value)" style="width:100%">
     <div id="batReadout" class="readout"></div>
-    <div class="note">Ladung/Entladung = Energie in bzw. aus dem Speicher (PV minus Abgabe). Tag: 5‑Minuten-Auflösung, sonst je Tag bzw. Monat. Kategorien antippen zum Ein-/Ausblenden.</div></div>`;
+    <div class="note">Ladung/Entladung = Energie in bzw. aus dem Speicher. Tag: 5‑Minuten-Auflösung, sonst je Tag bzw. Monat. Kategorien antippen zum Ein-/Ausblenden.</div></div>
+    <div class="card"><h2>Ladestandverlauf</h2>
+    <div class="navrow"><button class="ghost" onclick="socNav(-1)">◀</button><b id="socLabel"></b><button class="ghost" onclick="socNav(1)">▶</button></div>
+    <canvas id="socChart"></canvas>
+    <input type="range" id="socSlider" min="0" max="0" value="0" oninput="onSocSlider(this.value)" style="width:100%">
+    <div id="socReadout" class="readout"></div>
+    <div class="note">Ladestand (%) je Speicher über den Tag. Die Y-Achse passt sich automatisch an den Wertebereich an.</div></div>`;
   document.getElementById("batteries").innerHTML = html;
   loadBatteryStats();
+  loadSoc();
 }
 
 // ---- per-battery charge/discharge chart (mirrors the statistics chart) ----
@@ -218,10 +225,11 @@ const BAT_PALETTE = ["#1565c0", "#ef6c00", "#2e7d32", "#c62828", "#6a1b9a", "#00
 let batView = { mode: localStorage.getItem("batMode") || "week", anchor: new Date() };
 // Default to metrics that already have history ("Abgabe") plus the new "Entladung"; a fresh key
 // so earlier visitors get the better default instead of the old all-empty charge/discharge pair.
-let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetricsV2") || '["discharge","output"]'));
+let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetricsV3") || '["charge","discharge","output"]'));
 let batHidden = new Set(JSON.parse(localStorage.getItem("batHidden") || "[]"));
 let batChartMode = localStorage.getItem("batChartMode") || "bar";
 let batData = null, batKey = "", batSelected = null;
+let socAnchor = new Date(), socData = null, socKey = "", socSel = null;
 
 function computeBatWindow() {
   const a = batView.anchor;
@@ -242,13 +250,45 @@ function batNav(d) {
 function setBatChartMode(m) { batChartMode = m; localStorage.setItem("batChartMode", m); renderBatteries(lastState); }
 function toggleBatMetric(k) {
   if (batMetrics.has(k)) batMetrics.delete(k); else batMetrics.add(k);
-  localStorage.setItem("batMetricsV2", JSON.stringify([...batMetrics])); drawBatteryChart();
+  localStorage.setItem("batMetricsV3", JSON.stringify([...batMetrics])); drawBatteryChart();
 }
 function toggleBat(id) {
   if (batHidden.has(id)) batHidden.delete(id); else batHidden.add(id);
-  localStorage.setItem("batHidden", JSON.stringify([...batHidden])); drawBatteryChart();
+  localStorage.setItem("batHidden", JSON.stringify([...batHidden])); drawBatteryChart(); drawSoc();
 }
 function onBatSlider(v) { batSelected = +v; drawBatteryChart(); }
+function onSocSlider(v) { socSel = +v; drawSoc(); }
+function socNav(x) { socAnchor.setDate(socAnchor.getDate() + x); socAnchor = new Date(socAnchor); socSel = null; loadSoc(true); }
+async function loadSoc(force) {
+  const d = fmt(socAnchor);
+  const lbl = document.getElementById("socLabel");
+  if (lbl) lbl.textContent = socAnchor.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
+  try {
+    if (force || !socData || socKey !== d) { socData = await api(`batterystats?bucket=5min&from=${d}&to=${d}`); socKey = d; }
+    drawSoc();
+  } catch (e) { /* ignore */ }
+}
+function drawSoc() {
+  const canvas = document.getElementById("socChart"); if (!canvas) return;
+  const labels = socData?.labels || [];
+  const bats = (socData?.series || []).filter(b => !batHidden.has(b.id));
+  const series = bats.map((b, i) => ({ color: BAT_PALETTE[i % BAT_PALETTE.length], name: b.name, soc: b.soc || [] }));
+  const slider = document.getElementById("socSlider"), ro = document.getElementById("socReadout");
+  const hasData = series.some(s => s.soc.some(v => v >= 0));
+  if (!labels.length || !hasData) {
+    if (slider) slider.max = 0;
+    if (ro) ro.innerHTML = `<div class="note">Für diesen Tag liegt noch kein Ladestandverlauf vor.</div>`;
+    lineChart(canvas, [], {}); return;
+  }
+  if (socSel == null || socSel > labels.length - 1) socSel = labels.length - 1;
+  if (slider) { slider.max = labels.length - 1; slider.value = socSel; }
+  lineChart(canvas, series.map(s => ({ color: s.color, points: labels.map((_, i) => [i, s.soc[i]]).filter(p => p[1] >= 0) })),
+    { unit: "%", selected: socSel, xTicks: timeTicks(labels) });
+  ro.innerHTML = `<div class="ro-h">${labels[socSel]}</div>` + series.map(s => {
+    const vv = s.soc[socSel];
+    return `<span class="ro" style="color:${s.color}"><span class="dot" style="background:${s.color};border-color:${s.color}"></span>${s.name}: <b style="color:${s.color}">${vv >= 0 ? vv + " %" : "–"}</b></span>`;
+  }).join("");
+}
 async function loadBatteryStats(force) {
   const w = computeBatWindow();
   const lbl = document.getElementById("batLabel"); if (lbl) lbl.textContent = w.label;
