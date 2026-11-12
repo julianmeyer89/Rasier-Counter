@@ -257,7 +257,9 @@ class ServerHub(
             batteryPollIntervalSeconds = update.batteryPollIntervalSeconds.coerceIn(5, 3600),
             selfDischargeAlertW = update.selfDischargeAlertW.coerceIn(1, 1000),
             calibrationDeviationPercent = update.calibrationDeviationPercent.coerceIn(1, 100),
-            ntfyTopic = update.ntfyTopic.trim().take(120),
+            // ntfy topics allow only [A-Za-z0-9_-]; strip the rest so a stray space/newline can't
+            // turn every push into a silently-swallowed URISyntaxException.
+            ntfyTopic = update.ntfyTopic.trim().filter { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '_' || it == '-' }.take(120),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),
@@ -719,18 +721,22 @@ class ServerHub(
         pushScope.launch {
             runCatching {
                 val conn = java.net.URI("$base/$topic").toURL().openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
-                conn.doOutput = true
-                conn.setRequestProperty("Title", title)          // ASCII titles only (HTTP header)
-                conn.setRequestProperty("Priority", priority)
-                conn.setRequestProperty("Tags", tags)
-                conn.outputStream.use { it.write(message.toByteArray(Charsets.UTF_8)) }
-                val code = conn.responseCode
-                conn.inputStream.use { it.readBytes() }
-                conn.disconnect()
-                if (code !in 200..299) log("ntfy-Push HTTP $code")
+                try {
+                    conn.requestMethod = "POST"
+                    conn.connectTimeout = 8000
+                    conn.readTimeout = 8000
+                    conn.doOutput = true
+                    conn.setRequestProperty("Title", title)          // ASCII titles only (HTTP header)
+                    conn.setRequestProperty("Priority", priority)
+                    conn.setRequestProperty("Tags", tags)
+                    conn.outputStream.use { it.write(message.toByteArray(Charsets.UTF_8)) }
+                    val code = conn.responseCode
+                    // For a non-2xx status getInputStream() throws; the body (if any) is on errorStream.
+                    (if (code in 200..299) conn.inputStream else conn.errorStream)?.use { it.readBytes() }
+                    if (code !in 200..299) log("ntfy-Push HTTP $code")
+                } finally {
+                    conn.disconnect()
+                }
             }.onFailure { log("ntfy-Push fehlgeschlagen: ${it.message}") }
         }
     }
