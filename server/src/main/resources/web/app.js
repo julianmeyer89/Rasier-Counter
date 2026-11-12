@@ -438,21 +438,23 @@ function timeTicks(labels) {
   return ticks;
 }
 // For the day view (labels "HH:MM") place ticks on full hours; otherwise space evenly.
-function statsXTicks() {
-  if (statsLabels.length && /^\d\d:\d\d$/.test(statsLabels[0])) return timeTicks(statsLabels);
-  return xTicksFor(statsLabels);
-}
+function statsIsDay() { return statsLabels.length && /^\d\d:\d\d$/.test(statsLabels[0]); }
+function statsXTicks() { return statsIsDay() ? timeTicks(statsLabels) : xTicksFor(statsLabels); }
 function drawStatsChart() {
   const canvas = document.getElementById("statsChart");
   if (!canvas || !statsData || !statsData.length) return;
   if (statsSelected == null || statsSelected > statsData.length - 1) statsSelected = statsData.length - 1;
   const cats = STAT_CATS.filter(c => !statsOff.has(c.key));
+  // Day view = 5-minute buckets: show average power (W = Wh per slot x 12). Otherwise energy (kWh).
+  const isDay = statsIsDay();
+  const toChart = (wh) => isDay ? wh * 12 : wh / 1000;
+  const unit = isDay ? "W" : "kWh";
   if (statsChartMode === "line") {
-    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, c.wh(d) / 1000]) })),
-      { unit: "kWh", selected: statsSelected, xTicks: statsXTicks() });
+    lineChart(canvas, cats.map(c => ({ color: c.color, points: statsData.map((d, i) => [i, toChart(c.wh(d))]) })),
+      { unit, selected: statsSelected, xTicks: statsXTicks() });
   } else {
-    barChart(canvas, statsData.map(d => cats.map(c => [c.color, c.wh(d) / 1000])),
-      { unit: "kWh", labels: statsLabels, selected: statsSelected });
+    barChart(canvas, statsData.map(d => cats.map(c => [c.color, toChart(c.wh(d))])),
+      { unit, labels: statsLabels, selected: statsSelected });
   }
   updateReadout();
 }
@@ -462,9 +464,11 @@ function updateReadout() {
   if (!box) return;
   const d = statsData && statsData[statsSelected];
   if (!d) { box.innerHTML = ""; return; }
+  const isDay = statsIsDay();
+  const fmtVal = (wh) => isDay ? (Math.round(wh * 12) + " W") : KWH(wh);
   box.innerHTML = `<div class="ro-h">${statsLabels[statsSelected]}</div>` +
     STAT_CATS.filter(c => !statsOff.has(c.key)).map(c =>
-      `<span class="ro" style="color:${c.color}"><span class="dot" style="background:${c.color};border-color:${c.color}"></span>${c.label}: <b style="color:${c.color}">${KWH(c.wh(d))}</b></span>`).join("");
+      `<span class="ro" style="color:${c.color}"><span class="dot" style="background:${c.color};border-color:${c.color}"></span>${c.label}: <b style="color:${c.color}">${fmtVal(c.wh(d))}</b></span>`).join("");
 }
 
 async function renderStats() {
@@ -513,7 +517,7 @@ async function renderStats() {
       <canvas id="statsChart"></canvas>
       <input type="range" min="0" max="${Math.max(0, statsData.length - 1)}" value="${statsData.length - 1}" oninput="onStatsSlider(this.value)" style="width:100%">
       <div id="readout" class="readout"></div>
-      <div class="note">Regler ziehen für einen Zeitpunkt. Kategorien antippen zum Ein-/Ausblenden. Werte in kWh.</div></div>`;
+      <div class="note">Regler ziehen für einen Zeitpunkt. Kategorien antippen zum Ein-/Ausblenden. Werte: Tag in W, Woche/Monat/Jahr in kWh.</div></div>`;
   } else {
     html += `<div class="card"><div class="note">Für diesen Zeitraum liegen noch keine Daten vor.</div></div>`;
   }
