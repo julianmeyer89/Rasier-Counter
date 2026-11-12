@@ -34,6 +34,10 @@ auth_token=
 ct002_poll_interval_seconds=2
 battery_poll_interval_seconds=5
 
+# Warnung, wenn ein Speicher im Leerlauf mehr als diese Leistung durch Eigenentladung
+# verliert (W). Auch in der Weboberfläche einstellbar.
+self_discharge_alert_w=25
+
 # Automatik darf Einstellungen am Speicher ändern (Kalibrierung, Ausgleich).
 # Zu Beginn false lassen und erst einschalten, wenn die Werte stimmen.
 automations_may_write=false

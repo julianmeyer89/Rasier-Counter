@@ -630,6 +630,8 @@ async function renderSettings() {
     <div class="note">Aus: nur Vorschläge. An: Kalibrierung und Ausgleich ändern DoD und Lademodus selbst (Tageslimit aktiv).</div>
     <div class="switch"><span>Ladestände ausgleichen</span><input type="checkbox" id="s_bal" ${s.balancerEnabled ? "checked" : ""}></div>
     <label class="field">Kalibrierung alle … Tage (0 = manuell)</label><input id="s_cal" type="number" value="${s.calibrationIntervalDays}">
+    <label class="field">Warnung Eigenentladung ab (W)</label><input id="s_selfdis" type="number" min="1" value="${s.selfDischargeAlertW}">
+    <div class="note">Warnt, wenn ein Speicher im Leerlauf mehr als diese Leistung durch Eigenentladung verliert. Passe den Wert an, sobald du den Normalwert kennst (siehe „Eigenentladung heute" je Speicher).</div>
     </div>
     <div style="padding:0 6px"><button class="primary" onclick="saveSettings()">Speichern</button></div>`;
   document.getElementById("settings").innerHTML = html;
@@ -640,6 +642,7 @@ async function saveSettings() {
     importCentPerKwh: +v("s_import"), feedInCentPerKwh: +v("s_feed"), baseFeeEuroPerMonth: +v("s_base"),
     inverterEfficiencyPercent: +v("s_eff"), inverterMaxW: +v("s_invmax"),
     ct002PollIntervalSeconds: +v("s_pollct"), batteryPollIntervalSeconds: +v("s_pollbat"),
+    selfDischargeAlertW: +v("s_selfdis"),
     automationsMayWrite: document.getElementById("s_write").checked,
     balancerEnabled: document.getElementById("s_bal").checked,
     calibrationIntervalDays: +v("s_cal"),

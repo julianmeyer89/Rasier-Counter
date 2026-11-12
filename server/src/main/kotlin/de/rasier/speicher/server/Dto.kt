@@ -163,6 +163,7 @@ data class SettingsDto(
     // Defaults let settings saved before the split (single pollIntervalSeconds) still load.
     val ct002PollIntervalSeconds: Double = 2.0,
     val batteryPollIntervalSeconds: Int = 5,
+    val selfDischargeAlertW: Int = 25,
     val automationsMayWrite: Boolean,
     val balancerEnabled: Boolean,
     val calibrationIntervalDays: Int,

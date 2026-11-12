@@ -218,6 +218,7 @@ class ServerHub(
             ),
             ct002PollIntervalSeconds = update.ct002PollIntervalSeconds.coerceIn(0.5, 3600.0),
             batteryPollIntervalSeconds = update.batteryPollIntervalSeconds.coerceIn(5, 3600),
+            selfDischargeAlertW = update.selfDischargeAlertW.coerceIn(1, 1000),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),
@@ -243,6 +244,7 @@ class ServerHub(
         inverterMaxW = config.system.inverterMaxW,
         ct002PollIntervalSeconds = config.ct002PollIntervalSeconds,
         batteryPollIntervalSeconds = config.batteryPollIntervalSeconds,
+        selfDischargeAlertW = config.selfDischargeAlertW,
         automationsMayWrite = config.automationsMayWrite,
         balancerEnabled = config.automation.balancer.enabled,
         calibrationIntervalDays = config.automation.calibration.intervalDays,
@@ -612,7 +614,7 @@ class ServerHub(
     private fun selfDischargeAlerts(batteries: Collection<BatteryState>, nowMs: Long): List<AlertDto> =
         batteries.mapNotNull { b ->
             val w = selfDischargePowerW(b.id) ?: return@mapNotNull null
-            if (w <= SELF_DISCHARGE_ALERT_W) return@mapNotNull null
+            if (w <= config.selfDischargeAlertW) return@mapNotNull null
             AlertDto("selfdis-${b.id}", "WARN", "Hohe Eigenentladung",
                 "${b.name}: ~$w W Eigenentladung im Leerlauf (heute ${(idleSelfWhToday[b.id] ?: 0.0).roundToInt()} Wh) – bitte beobachten.", nowMs)
         }
@@ -664,7 +666,7 @@ class ServerHub(
                     dodPercent = it.dodPercent, chargeMode = it.chargeMode.name, adaptiveMode = it.adaptiveMode,
                     dailyPvWh = it.dailyPvWh, dailyOutputWh = it.dailyOutputWh,
                     deliveredTodayWh = delivered, selfDischargeTodayWh = dd?.selfDischargeWh, selfDischargeW = selfW,
-                    selfDischargeHigh = selfW != null && selfW > SELF_DISCHARGE_ALERT_W,
+                    selfDischargeHigh = selfW != null && selfW > config.selfDischargeAlertW,
                     temperatureC = it.temperatureC,
                     firmware = it.firmware, ageSeconds = ((nowMs - it.timestampMs) / 1000).coerceAtLeast(0),
                 )
@@ -702,6 +704,5 @@ class ServerHub(
         const val CT_STALE_RECONNECT_MS = 180_000L   // reconnect if the CT002 is silent this long while batteries report
         const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
         const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
-        const val SELF_DISCHARGE_ALERT_W = 25.0       // flag a battery whose idle self-discharge exceeds this (W, 24h avg)
     }
 }

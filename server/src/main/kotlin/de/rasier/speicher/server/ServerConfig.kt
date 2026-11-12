@@ -29,6 +29,8 @@ data class ServerConfig(
     /** Poll interval for the batteries (seconds). They change slowly, so we poll them less often. */
     val batteryPollIntervalSeconds: Int,
     val cloudHttpIntervalSeconds: Int,
+    /** Warn when a battery's idle self-discharge exceeds this power (W). */
+    val selfDischargeAlertW: Int,
     val automationsMayWrite: Boolean,
     val useNoFlashCommands: Boolean,
     /** Log the raw cloud payloads for diagnosis. */
@@ -69,6 +71,7 @@ data class ServerConfig(
                 ct002PollIntervalSeconds = dbl("ct002_poll_interval_seconds", 2.0).coerceIn(0.5, 3600.0),
                 batteryPollIntervalSeconds = int("battery_poll_interval_seconds", int("poll_interval_seconds", 5)).coerceIn(5, 3600),
                 cloudHttpIntervalSeconds = int("cloud_http_interval_seconds", 300),
+                selfDischargeAlertW = int("self_discharge_alert_w", 25),
                 automationsMayWrite = bool("automations_may_write", false),
                 useNoFlashCommands = bool("use_no_flash_commands", false),
                 debug = bool("debug", false),
