@@ -85,6 +85,8 @@ class ServerHub(
     private var lastReconnectMs = 0L
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
+    // Per-battery reachability, so a reboot (device stops answering, then returns) is visible in the log.
+    private val batteryReachable = HashMap<String, Boolean>()
     // Capacity-measurement state: per-battery current clean-discharge run, and the persisted samples.
     private val capWinActive = HashMap<String, Boolean>()
     private val capWinPeak = HashMap<String, Int>()
@@ -131,6 +133,7 @@ class ServerHub(
         snapshot.batteries.forEach { lastBatteries[it.id] = it }
         snapshot.meter?.let { lastMeter = it }
         lastSnapshot = snapshot
+        checkReachability(nowMs)
 
         integrator.add(snapshot)
         if (!config.demo) recordDeviceDays(snapshot)
@@ -494,6 +497,20 @@ class ServerHub(
 
     // ---- internals ----
 
+    /** Logs when a battery stops answering (e.g. during a reboot) and when it is reachable again. */
+    private fun checkReachability(nowMs: Long) {
+        for (id in link.batteryIds) {
+            val ts = lastBatteries[id]?.timestampMs ?: continue
+            val reachable = nowMs - ts < REACH_STALE_MS
+            val prev = batteryReachable[id]
+            batteryReachable[id] = reachable
+            if (prev != null && prev != reachable) {
+                val name = lastBatteries[id]?.name ?: id.takeLast(6)
+                addEvents(listOf(if (reachable) "$name wieder erreichbar" else "$name nicht mehr erreichbar (keine Antwort seit ${REACH_STALE_MS / 1000} s – z. B. Neustart)"), nowMs)
+            }
+        }
+    }
+
     private fun recordMeterFresh(fresh: Boolean) {
         meterFreshWindow.addLast(fresh)
         while (meterFreshWindow.size > METER_QUALITY_WINDOW) meterFreshWindow.removeFirst()
@@ -775,6 +792,7 @@ class ServerHub(
         const val CT_STALE_RECONNECT_MS = 180_000L   // reconnect if the CT002 is silent this long while batteries report
         const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
         const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
+        const val REACH_STALE_MS = 30_000L            // no battery frame for this long = "not reachable" (reboot visible)
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median
