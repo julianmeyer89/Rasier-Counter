@@ -29,9 +29,9 @@ fun CalibrationScreen(state: HubState, graph: AppGraph) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
         InfoCard(
             "Die Kalibrierung macht einen vollen Zyklus, damit der Speicher seinen Ladestand neu lernt: " +
-                "erst auf 100 % laden und ${cal.holdFullMinutes} min halten, dann bis ${100 - cal.dischargeDodPercent} % " +
-                "entladen. Danach werden deine Einstellungen wiederhergestellt. Immer nur ein Speicher, der andere " +
-                "versorgt weiter das Haus. Je nach Sonne dauert das 1–3 Tage.",
+                "auf 100 % laden und ${cal.holdMinutes} min halten, bis ~0 % entladen und halten, wieder voll laden " +
+                "und halten. Danach werden deine Einstellungen wiederhergestellt. Immer nur ein Speicher, der andere " +
+                "versorgt weiter das Haus. Je nach Sonne dauert das mehrere Tage.",
         )
 
         SectionCard("Status") {
@@ -87,8 +87,15 @@ private fun phaseLabel(p: CalibrationPhase) = when (p) {
     CalibrationPhase.PREPARE -> "Vorbereitung"
     CalibrationPhase.CHARGING -> "Laden auf 100 %"
     CalibrationPhase.HOLD_FULL -> "100 % halten"
-    CalibrationPhase.DISCHARGING -> "Entladen"
+    CalibrationPhase.WAIT_SUNSET -> "Warte auf Abend"
+    CalibrationPhase.EVENING_DISCHARGE -> "Abend-Entladung (Auto)"
+    CalibrationPhase.MANUAL_EMPTY -> "Rest entladen (Manuell)"
     CalibrationPhase.HOLD_EMPTY -> "Untergrenze halten"
+    CalibrationPhase.RECHARGE -> "Erneut laden"
+    CalibrationPhase.HOLD_FULL2 -> "100 % halten (2.)"
+    CalibrationPhase.VERIFY -> "Nulleinspeisung prüfen"
+    CalibrationPhase.RECOVER_MANUAL -> "Erholung: Manuell"
+    CalibrationPhase.RECOVER_WAIT -> "Erholung: Neustart/warten"
     CalibrationPhase.DONE -> "abgeschlossen"
     CalibrationPhase.ABORTED -> "abgebrochen"
 }

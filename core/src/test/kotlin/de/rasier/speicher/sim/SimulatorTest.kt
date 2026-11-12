@@ -41,9 +41,10 @@ class SimulatorTest {
         val sim = SimulatedSystem(zone, initialSoc = listOf(60.0, 60.0))
         val engine = AutomationEngine(
             AutomationSettings(
-                calibration = CalibrationSettings(holdFullMinutes = 30, holdEmptyMinutes = 10, intervalDays = 0, maxHoursPerBattery = 96),
+                calibration = CalibrationSettings(holdMinutes = 30, intervalDays = 0, maxHoursPerBattery = 96),
                 batteryIds = sim.batteryIds,
             ),
+            zone,
         )
         var state = AutomationState()
         state = engine.startCalibration(state, sim.batteryIds, start).state

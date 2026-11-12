@@ -75,17 +75,21 @@ class SimulatedSystem(
         }
         val load = houseLoad(hour, nowMs)
 
-        // CT002 zero-export: share the house demand between batteries that may discharge.
-        val available = batteries.filter { canDischarge(it) }
+        // CT002 zero-export: share the house demand between batteries in Auto mode that may discharge.
+        // A battery in Manual mode (adaptive off) runs the user's fixed 800 W schedule regardless of load.
+        val available = batteries.filter { it.adaptive && canDischarge(it) }
         val demandDc = load / inverterEfficiency
         val perBattery = if (available.isEmpty()) 0.0 else demandDc / available.size
         batteries.forEach { b ->
-            b.outW = if (b in available) {
-                val target = min(perBattery, 800.0)
-                // A B2500 cannot go below ~80 W with a Hoymiles inverter selected.
-                if (target < 80) 0 else target.roundToInt()
-            } else {
-                0
+            val soc = b.socWh / capacityWh * 100
+            b.outW = when {
+                !b.adaptive -> if (soc <= 100 - b.dod) 0 else 800 // Manual 800 W force-discharge
+                b in available -> {
+                    val target = min(perBattery, 800.0)
+                    // A B2500 cannot go below ~80 W with a Hoymiles inverter selected.
+                    if (target < 80) 0 else target.roundToInt()
+                }
+                else -> 0
             }
         }
         // Surplus PV passes through when the battery is full.

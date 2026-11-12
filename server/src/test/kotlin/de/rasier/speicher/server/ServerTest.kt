@@ -21,7 +21,7 @@ private fun demoConfig(dir: File, write: Boolean = true) = ServerConfig(
     dataDir = dir.path, webPort = 0, authToken = "", ct002PollIntervalSeconds = 2.0, batteryPollIntervalSeconds = 5, cloudHttpIntervalSeconds = 300, selfDischargeAlertW = 25, calibrationDeviationPercent = 15,
     automationsMayWrite = write, useNoFlashCommands = false, debug = false,
     tariff = Tariff(30.0, 8.0), system = SystemConfig(),
-    automation = AutomationSettings(calibration = CalibrationSettings(holdFullMinutes = 30, holdEmptyMinutes = 10, intervalDays = 0)),
+    automation = AutomationSettings(calibration = CalibrationSettings(holdMinutes = 30, intervalDays = 0)),
 )
 
 class ServerHubTest {

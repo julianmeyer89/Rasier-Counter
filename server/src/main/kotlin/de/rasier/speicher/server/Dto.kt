@@ -173,6 +173,11 @@ data class SettingsDto(
     val automationsMayWrite: Boolean,
     val balancerEnabled: Boolean,
     val calibrationIntervalDays: Int,
+    // Calibration process tuning (defaults let older saved settings still load).
+    val calibrationHoldMinutes: Int = 30,
+    val calibrationDischargeStartMinuteOfDay: Int = 120,
+    val calibrationToleranceSocPercent: Int = 98,
+    val calibrationRecoveryAttempts: Int = 3,
 )
 
 /**
@@ -228,8 +233,15 @@ fun phaseLabel(p: CalibrationPhase): String = when (p) {
     CalibrationPhase.PREPARE -> "Vorbereitung"
     CalibrationPhase.CHARGING -> "Laden auf 100 %"
     CalibrationPhase.HOLD_FULL -> "100 % halten"
-    CalibrationPhase.DISCHARGING -> "Entladen"
+    CalibrationPhase.WAIT_SUNSET -> "Warte auf Abend"
+    CalibrationPhase.EVENING_DISCHARGE -> "Abend-Entladung (Auto)"
+    CalibrationPhase.MANUAL_EMPTY -> "Rest entladen (Manuell)"
     CalibrationPhase.HOLD_EMPTY -> "Untergrenze halten"
+    CalibrationPhase.RECHARGE -> "Erneut laden"
+    CalibrationPhase.HOLD_FULL2 -> "100 % halten (2.)"
+    CalibrationPhase.VERIFY -> "Nulleinspeisung prüfen"
+    CalibrationPhase.RECOVER_MANUAL -> "Erholung: Manuell"
+    CalibrationPhase.RECOVER_WAIT -> "Erholung: Neustart/warten"
     CalibrationPhase.DONE -> "abgeschlossen"
     CalibrationPhase.ABORTED -> "abgebrochen"
 }

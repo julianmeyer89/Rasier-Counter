@@ -95,10 +95,26 @@ const CALIBRATION_INFO = `
 <p class="note">Übersteigt die Abweichung den hier eingestellten Wert (bei mindestens zwei Messungen), erscheint <b>„Kalibrierung empfohlen"</b>. Niedriger = empfindlicher.</p>
 <p class="note"><b>Hinweis:</b> Es braucht Entladungen mit großem SOC‑Hub (mind. 25 %) ohne PV; die ersten Messwerte entstehen also erst nach ein paar solchen Nächten. Eine dauerhaft kleinere gemessene Kapazität kann auch normale Alterung sein – die Kalibrierung richtet die Anzeige trotzdem wieder nach der Realität aus.</p>`;
 
+const CALIBPROC_INFO = `
+<p class="note">Die automatische Kalibrierung fährt <b>einen Speicher nach dem anderen</b> durch einen vollen Zyklus, damit der BMS seine obere <i>und</i> untere SOC‑Grenze neu lernt. Der andere Speicher versorgt derweil normal das Haus.</p>
+<p class="note"><b>Ablauf:</b></p>
+<table class="info-table">
+  <tr><th>Schritt</th><th>Was passiert</th></tr>
+  <tr><td>1. Laden</td><td>Lademodus „erst laden", DoD 0 % → lädt bis 100 % (nie vorher entladen; darf mehrere Tage dauern).</td></tr>
+  <tr><td>2. Halten</td><td><b>Haltezeit</b> bei 100 % (siehe unten), damit der obere Punkt sicher sitzt.</td></tr>
+  <tr><td>3. Auf Abend warten</td><td>Wartet, bis die Sonne weg ist (PV lange unter 10 W). <b>Toleranz</b>: bis zu dieser SOC‑Grenze darf er bis dahin durch Selbstentladung sinken, ohne nachzuladen.</td></tr>
+  <tr><td>4. Abend‑Entladung</td><td>Im Automodus – das Haus nutzt die Energie.</td></tr>
+  <tr><td>5. Rest leeren</td><td>Ab der eingestellten <b>Uhrzeit</b> im Manuell‑Modus (deine 800‑W‑Regel) bis ~0 %.</td></tr>
+  <tr><td>6. Erneut laden</td><td>DoD 0 %, zurück auf 100 %, nochmal Haltezeit.</td></tr>
+  <tr><td>7. Freigeben & prüfen</td><td>Zurück auf „gleichzeitig laden/entladen" im Automodus und Nulleinspeisung prüfen. Klappt sie nicht: Manuell → Neustart → warten → Auto, bis zu den eingestellten <b>Versuchen</b>; sonst Stopp + Push.</td></tr>
+</table>
+<p class="note">Danach werden deine ursprünglichen Einstellungen (DoD, Lademodus, Auto) wiederhergestellt.</p>`;
+
 const INFO = {
   values: { title: "Was bedeuten die Werte?", body: VALUE_INFO },
   efficiency: { title: "Wirkungsgrad", body: EFFICIENCY_INFO },
   calibration: { title: "Kalibrierung empfohlen", body: CALIBRATION_INFO },
+  calibproc: { title: "Kalibrier‑Ablauf", body: CALIBPROC_INFO },
 };
 
 function openInfo(key) {
@@ -646,7 +662,12 @@ async function renderSettings() {
     <div class="switch"><span>Automatik darf Einstellungen ändern</span><input type="checkbox" id="s_write" ${s.automationsMayWrite ? "checked" : ""}></div>
     <div class="note">Aus: nur Vorschläge. An: Kalibrierung und Ausgleich ändern DoD und Lademodus selbst (Tageslimit aktiv).</div>
     <div class="switch"><span>Ladestände ausgleichen</span><input type="checkbox" id="s_bal" ${s.balancerEnabled ? "checked" : ""}></div>
-    <label class="field">Kalibrierung alle … Tage (0 = manuell)</label><input id="s_cal" type="number" value="${s.calibrationIntervalDays}">
+    <label class="field">Kalibrierung alle … Tage (0 = manuell) <button class="infobtn infobtn-inline" onclick="openInfo('calibproc')" title="Ablauf erklären">i</button></label><input id="s_cal" type="number" value="${s.calibrationIntervalDays}">
+    <label class="field">Haltezeit bei 100 %/leer (min)</label><input id="s_calhold" type="number" min="0" value="${s.calibrationHoldMinutes}">
+    <label class="field">Rest leeren ab Uhrzeit (Manuell‑Modus)</label><input id="s_caltime" type="time" value="${minToTime(s.calibrationDischargeStartMinuteOfDay)}">
+    <label class="field">Entladen starten ab SOC‑Toleranz nach voll (%)</label><input id="s_caltol" type="number" min="50" max="100" value="${s.calibrationToleranceSocPercent}">
+    <label class="field">Nulleinspeisung: Wiederherstellungs‑Versuche</label><input id="s_calrec" type="number" min="0" max="10" value="${s.calibrationRecoveryAttempts}">
+    <div class="note">Ablauf der Kalibrierung über das „i" oben. Haltezeit: wie lange 100 % (und die Untergrenze) gehalten werden. Toleranz: steht mittags schon 100 % an, darf der Speicher bis zum Sonnenuntergang auf diesen Wert selbstentladen, ohne nachzuladen. Versuche: so oft wird bei fehlender Nulleinspeisung Manuell→Neustart→Auto probiert, bevor gestoppt wird.</div>
     <label class="field">Warnung Eigenentladung ab (W)</label><input id="s_selfdis" type="number" min="1" value="${s.selfDischargeAlertW}">
     <div class="note">Warnt, wenn ein Speicher im Leerlauf mehr als diese Leistung durch Eigenentladung verliert. Passe den Wert an, sobald du den Normalwert kennst (siehe „Eigenentladung heute" je Speicher).</div>
     <label class="field">Kalibrierung empfehlen ab Abweichung (%) <button class="infobtn infobtn-inline" onclick="openInfo('calibration')" title="Erklärung">i</button></label><input id="s_calibdev" type="number" min="1" value="${s.calibrationDeviationPercent}">
@@ -665,11 +686,17 @@ async function saveSettings() {
     automationsMayWrite: document.getElementById("s_write").checked,
     balancerEnabled: document.getElementById("s_bal").checked,
     calibrationIntervalDays: +v("s_cal"),
+    calibrationHoldMinutes: +v("s_calhold"),
+    calibrationDischargeStartMinuteOfDay: timeToMin(v("s_caltime")),
+    calibrationToleranceSocPercent: +v("s_caltol"),
+    calibrationRecoveryAttempts: +v("s_calrec"),
   };
   await api("settings", { method: "POST", body: JSON.stringify(body) });
   toast("Gespeichert");
 }
 const v = (id) => document.getElementById(id).value;
+const minToTime = (m) => `${String(Math.floor((m || 0) / 60)).padStart(2, "0")}:${String((m || 0) % 60).padStart(2, "0")}`;
+const timeToMin = (t) => { const [h, m] = (t || "02:00").split(":").map(Number); return (h || 0) * 60 + (m || 0); };
 
 // ---- charts ----
 const CHART_H = 180, PAD_L = 46, PAD_B = 18, PAD_T = 8;

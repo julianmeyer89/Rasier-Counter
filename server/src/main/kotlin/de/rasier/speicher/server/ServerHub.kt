@@ -48,7 +48,7 @@ class ServerHub(
     private val settingsFile = File(dataDir, "user_settings.json")
     private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     private var integrator = EnergyIntegrator(config.system, zone).also { it.restore(store.loadDays()) }
-    private var engine = AutomationEngine(config.automation.copy(batteryIds = link.batteryIds))
+    private var engine = AutomationEngine(config.automation.copy(batteryIds = link.batteryIds), zone)
     private val writeGuard = WriteGuard()
 
     private var autoState: AutomationState = store.loadAutomation()
@@ -238,10 +238,16 @@ class ServerHub(
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),
-                calibration = config.automation.calibration.copy(intervalDays = update.calibrationIntervalDays.coerceIn(0, 365)),
+                calibration = config.automation.calibration.copy(
+                    intervalDays = update.calibrationIntervalDays.coerceIn(0, 365),
+                    holdMinutes = update.calibrationHoldMinutes.coerceIn(0, 240),
+                    dischargeStartMinuteOfDay = update.calibrationDischargeStartMinuteOfDay.coerceIn(0, 1439),
+                    chargeToleranceSocPercent = update.calibrationToleranceSocPercent.coerceIn(50, 100),
+                    recoveryAttempts = update.calibrationRecoveryAttempts.coerceIn(0, 10),
+                ),
             ),
         )
-        engine = AutomationEngine(config.automation.copy(batteryIds = link.batteryIds))
+        engine = AutomationEngine(config.automation.copy(batteryIds = link.batteryIds), zone)
         integrator = EnergyIntegrator(config.system, zone).also { it.restore(store.loadDays()) }
     }
 
@@ -265,6 +271,10 @@ class ServerHub(
         automationsMayWrite = config.automationsMayWrite,
         balancerEnabled = config.automation.balancer.enabled,
         calibrationIntervalDays = config.automation.calibration.intervalDays,
+        calibrationHoldMinutes = config.automation.calibration.holdMinutes,
+        calibrationDischargeStartMinuteOfDay = config.automation.calibration.dischargeStartMinuteOfDay,
+        calibrationToleranceSocPercent = config.automation.calibration.chargeToleranceSocPercent,
+        calibrationRecoveryAttempts = config.automation.calibration.recoveryAttempts,
     )
 
     fun history(hours: Int): HistoryDto {

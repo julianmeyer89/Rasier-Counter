@@ -13,43 +13,92 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CalibrationTest {
-    private val settings = CalibrationSettings(holdFullMinutes = 30, dischargeDodPercent = 90, holdEmptyMinutes = 10, maxHoursPerBattery = 48)
-    private val machine = CalibrationMachine(settings)
+    private val zone = java.time.ZoneId.of("UTC")
+    private val settings = CalibrationSettings(
+        holdMinutes = 0, dischargeDodPercent = 100, chargeToleranceSocPercent = 98,
+        dischargeStartMinuteOfDay = 120, sunsetPvW = 10, sunsetSustainMinutes = 0,
+        recoveryAttempts = 1, maxHoursPerBattery = 48,
+    )
+    private val machine = CalibrationMachine(settings, zone)
+    private fun ms(iso: String) = java.time.Instant.parse(iso).toEpochMilli()
 
     @Test
-    fun `full cycle for two batteries restores original settings`() {
-        var run = machine.start(listOf(B1, B2), 0)
+    fun `full cycle charges, discharges in the evening, recharges and verifies`() {
+        var run = machine.start(listOf(B1), ms("2024-06-01T12:00:00Z"))
         val sent = mutableListOf<BatteryCommand>()
-        fun step(t: Long, b: de.rasier.speicher.model.BatteryState) {
-            val s = machine.step(run, snapshot(t, b), t)
-            run = s.run
-            sent += s.commands
+        fun step(iso: String, soc: Int, pv: Int = 0, out: Int = 0, grid: Int? = null) {
+            val t = ms(iso)
+            val s = machine.step(run, snapshot(t, battery(B1, t = t, soc = soc, pv = pv, out = out, dod = 80), gridW = grid), t)
+            run = s.run; sent += s.commands
         }
-
-        step(0, battery(B1, soc = 60, dod = 80, mode = ChargeMode.SIMULTANEOUS))
+        step("2024-06-01T12:00:00Z", soc = 60)
         assertEquals(CalibrationPhase.CHARGING, run.phase)
-        assertEquals(BatteryCommand.SetChargeMode(B1, ChargeMode.CHARGE_THEN_DISCHARGE), sent.last())
+        assertTrue(BatteryCommand.SetChargeMode(B1, ChargeMode.CHARGE_THEN_DISCHARGE) in sent)
+        assertTrue(BatteryCommand.SetDod(B1, 0) in sent)                 // DoD 0 while charging
 
-        step(HOUR, battery(B1, soc = 100, dod = 80, mode = ChargeMode.CHARGE_THEN_DISCHARGE))
-        assertEquals(CalibrationPhase.HOLD_FULL, run.phase)
-        step(HOUR + 10 * MIN, battery(B1, soc = 100, dod = 80))
-        assertEquals(CalibrationPhase.HOLD_FULL, run.phase)
-        step(HOUR + 31 * MIN, battery(B1, soc = 100, dod = 80))
-        assertEquals(CalibrationPhase.DISCHARGING, run.phase)
-        assertTrue(BatteryCommand.SetDod(B1, 90) in sent)
+        step("2024-06-01T12:05:00Z", soc = 100); assertEquals(CalibrationPhase.HOLD_FULL, run.phase)
+        step("2024-06-01T12:06:00Z", soc = 100); assertEquals(CalibrationPhase.WAIT_SUNSET, run.phase)
+        step("2024-06-01T14:00:00Z", soc = 100, pv = 500); assertEquals(CalibrationPhase.WAIT_SUNSET, run.phase) // PV on -> wait
+        step("2024-06-01T20:00:00Z", soc = 99, pv = 0)                    // sunset, tolerated 99%
+        assertEquals(CalibrationPhase.EVENING_DISCHARGE, run.phase)
+        assertTrue(BatteryCommand.SetDod(B1, 100) in sent)               // full discharge, Auto
 
-        step(10 * HOUR, battery(B1, soc = 40, dod = 90, out = 200))
-        assertEquals(CalibrationPhase.DISCHARGING, run.phase)
-        step(20 * HOUR, battery(B1, soc = 11, dod = 90))
-        assertEquals(CalibrationPhase.HOLD_EMPTY, run.phase)
-        step(20 * HOUR + 11 * MIN, battery(B1, soc = 10, dod = 90))
+        step("2024-06-01T20:05:00Z", soc = 95, pv = 0, out = 300); assertEquals(CalibrationPhase.EVENING_DISCHARGE, run.phase)
+        step("2024-06-02T02:00:00Z", soc = 40, pv = 0, out = 200)        // 02:00 -> manual
+        assertEquals(CalibrationPhase.MANUAL_EMPTY, run.phase)
+        assertTrue(BatteryCommand.SetAdaptiveMode(B1, false) in sent)     // switch to manual
 
-        // Battery 1 done, original DoD 80 and SIMULTANEOUS restored, battery 2 is next.
-        assertEquals(BatteryCommand.SetDod(B1, 80), sent[sent.size - 2])
-        assertEquals(BatteryCommand.SetChargeMode(B1, ChargeMode.SIMULTANEOUS), sent.last())
-        assertEquals(B2, run.currentBatteryId)
-        assertEquals(CalibrationPhase.PREPARE, run.phase)
+        step("2024-06-02T02:30:00Z", soc = 1, out = 100); assertEquals(CalibrationPhase.HOLD_EMPTY, run.phase)
+        step("2024-06-02T02:31:00Z", soc = 1)                            // hold 0 -> recharge
+        assertEquals(CalibrationPhase.RECHARGE, run.phase)
+        assertTrue(BatteryCommand.SetAdaptiveMode(B1, true) in sent)      // back to auto for recharge
+
+        step("2024-06-02T09:00:00Z", soc = 100, pv = 500); assertEquals(CalibrationPhase.HOLD_FULL2, run.phase)
+        step("2024-06-02T09:01:00Z", soc = 100)                          // hold 0 -> release + verify
+        assertEquals(CalibrationPhase.VERIFY, run.phase)
+        assertTrue(BatteryCommand.SetDod(B1, 80) in sent)                // original DoD restored
+        assertTrue(BatteryCommand.SetChargeMode(B1, ChargeMode.SIMULTANEOUS) in sent)
+
+        step("2024-06-02T09:05:00Z", soc = 99, out = 250)               // delivering -> zero-export works
+        assertEquals(CalibrationPhase.DONE, run.phase)
         assertTrue(run.results.single().success)
+    }
+
+    @Test
+    fun `verify failure triggers reboot recovery and finally stops`() {
+        var run = machine.start(listOf(B1), 0)
+        val sent = mutableListOf<BatteryCommand>()
+        // Jump straight into VERIFY by hand (the full path is covered above).
+        run = run.copy(phase = CalibrationPhase.VERIFY, phaseSinceMs = 0, saved = SavedBatterySettings(80, ChargeMode.SIMULTANEOUS, true))
+        fun step(t: Long, out: Int, grid: Int?, batAge: Long = 0) {
+            val s = machine.step(run, snapshot(t, battery(B1, t = t - batAge, soc = 99, out = out, dod = 80), gridW = grid), t)
+            run = s.run; sent += s.commands
+        }
+        // Load present, battery not delivering -> failure must be sustained first.
+        step(0, out = 0, grid = 200); assertEquals(CalibrationPhase.VERIFY, run.phase)
+        step(CalibrationMachine.VERIFY_FAIL_SUSTAIN_MS + MIN, out = 0, grid = 200)
+        assertEquals(CalibrationPhase.RECOVER_MANUAL, run.phase)
+        assertEquals(BatteryCommand.SetAdaptiveMode(B1, false), sent.last())
+
+        val t0 = CalibrationMachine.VERIFY_FAIL_SUSTAIN_MS + MIN
+        step(t0 + CalibrationMachine.RECOVER_MANUAL_WAIT_MS + 1000, out = 0, grid = 200)
+        assertEquals(CalibrationPhase.RECOVER_WAIT, run.phase)
+        assertTrue(sent.last() is BatteryCommand.Reboot)                 // remote restart
+
+        // Battery reachable again + settle -> back to auto, attempt counted.
+        val t1 = t0 + CalibrationMachine.RECOVER_MANUAL_WAIT_MS + 1000
+        step(t1 + 5000, out = 0, grid = 200)                            // reachable, settling
+        step(t1 + CalibrationMachine.RECOVER_SETTLE_MS + 10_000, out = 0, grid = 200)
+        assertEquals(CalibrationPhase.VERIFY, run.phase)
+        assertEquals(BatteryCommand.SetAdaptiveMode(B1, true), sent.last())
+        assertEquals(1, run.recoveryAttempt)
+
+        // Still failing and attempts exhausted (1) -> calibration stops.
+        val t2 = t1 + CalibrationMachine.RECOVER_SETTLE_MS + 10_000
+        step(t2, out = 0, grid = 200)
+        step(t2 + CalibrationMachine.VERIFY_FAIL_SUSTAIN_MS + MIN, out = 0, grid = 200)
+        assertEquals(CalibrationPhase.ABORTED, run.phase)
+        assertEquals(false, run.results.single().success)
     }
 
     @Test
@@ -68,7 +117,8 @@ class CalibrationTest {
         run = machine.step(run, snapshot(0, battery(B1, soc = 50, dod = 85, mode = ChargeMode.SIMULTANEOUS)), 0).run
         val s = machine.abort(run, MIN)
         assertEquals(CalibrationPhase.ABORTED, s.run.phase)
-        assertEquals(listOf(BatteryCommand.SetDod(B1, 85), BatteryCommand.SetChargeMode(B1, ChargeMode.SIMULTANEOUS)), s.commands)
+        assertTrue(BatteryCommand.SetDod(B1, 85) in s.commands)
+        assertTrue(BatteryCommand.SetChargeMode(B1, ChargeMode.SIMULTANEOUS) in s.commands)
     }
 
     @Test

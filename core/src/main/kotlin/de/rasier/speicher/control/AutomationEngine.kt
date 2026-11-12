@@ -2,6 +2,7 @@ package de.rasier.speicher.control
 
 import de.rasier.speicher.model.SystemSnapshot
 import kotlinx.serialization.Serializable
+import java.time.ZoneId
 
 @Serializable
 data class AutomationSettings(
@@ -34,8 +35,8 @@ data class TickResult(
  * Pure decision logic: takes the latest snapshot and the remembered state, returns the commands
  * to send. It never talks to devices itself, so it runs identically in the app, on a PC and in tests.
  */
-class AutomationEngine(private val settings: AutomationSettings) {
-    private val calibration = CalibrationMachine(settings.calibration)
+class AutomationEngine(private val settings: AutomationSettings, zone: ZoneId = ZoneId.systemDefault()) {
+    private val calibration = CalibrationMachine(settings.calibration, zone)
     private val balancer = SocBalancer(settings.balancer)
     private val monitor = Monitor(settings.monitor)
 
