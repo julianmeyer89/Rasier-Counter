@@ -89,6 +89,8 @@ object CloudPayloads {
             // gesetzte Zeitplan. Die Manuell-Richtung ist über die Cloud noch nicht verifiziert –
             // am echten Gerät bestätigen, bevor die Kalibrierung sich darauf verlässt.
             "cd=${if (noFlash) 18 else 4},md=${if (command.enabled) 1 else 0}"
+        // cd=10 = Software-Neustart. ACHTUNG: cd=11 wäre Werksreset – wird hier NIE erzeugt.
+        is BatteryCommand.Reboot -> "cd=10"
     }
 
     private fun Map<String, String>.int(key: String): Int? = this[key]?.trim()?.toIntOrNull()

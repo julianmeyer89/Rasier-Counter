@@ -193,6 +193,7 @@ function renderBatteries(s) {
       <button class="sec" onclick="sendCmd('${b.id}','chargeMode', ${b.chargeMode === "CHARGE_THEN_DISCHARGE" ? 0 : 1})">Lademodus wechseln</button>
       ${b.adaptiveMode === true ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',0)">Auf Manuell (Zeitplan)</button>` : ""}
       ${b.adaptiveMode === false ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',1)">Auf Automatik</button>` : ""}
+      <button class="sec" onclick="rebootBattery('${b.id}','${b.name}')">Neustart (Test)</button>
     </div>`;
   }
   if (s.suggestions && s.suggestions.length) {
@@ -356,6 +357,15 @@ async function sendCmd(batteryId, type, value) {
     const r = await api("command", { method: "POST", body: JSON.stringify({ batteryId, type, value }) });
     toast(r.ok ? "Gesendet" : "Fehlgeschlagen");
     setTimeout(refresh, 1500);
+  } catch (e) { toast("Fehler: " + e.message); }
+}
+
+async function rebootBattery(batteryId, name) {
+  if (!confirm(`${name} aus der Ferne NEU STARTEN?\n\nDer Speicher ist danach ~1–2 Minuten offline und verbindet sich neu.\n(Dies sendet cd=10 – nur Neustart, kein Werksreset.)`)) return;
+  try {
+    const r = await api("command", { method: "POST", body: JSON.stringify({ batteryId, type: "reboot", value: 0 }) });
+    toast(r.ok ? "Neustart gesendet" : "Fehlgeschlagen");
+    setTimeout(refresh, 3000);
   } catch (e) { toast("Fehler: " + e.message); }
 }
 

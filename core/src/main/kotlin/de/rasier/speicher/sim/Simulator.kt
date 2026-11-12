@@ -158,6 +158,7 @@ class SimulatedSystem(
                 if (command.mode == ChargeMode.CHARGE_THEN_DISCHARGE) b.fullReached = false
             }
             is BatteryCommand.SetAdaptiveMode -> b.adaptive = command.enabled
+            is BatteryCommand.Reboot -> {} // simulated restart: no state change
         }
         return true
     }

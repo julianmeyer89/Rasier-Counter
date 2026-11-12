@@ -145,5 +145,6 @@ fun describe(c: BatteryCommand, batteries: List<BatteryState>): String {
         is BatteryCommand.SetDod -> "$name: Entladetiefe auf ${c.percent} %"
         is BatteryCommand.SetChargeMode -> "$name: Lademodus „${chargeModeLabel(c.mode)}“"
         is BatteryCommand.SetAdaptiveMode -> "$name: adaptiven Modus ${if (c.enabled) "einschalten" else "ausschalten"}"
+        is BatteryCommand.Reboot -> "$name: Neustart"
     }
 }

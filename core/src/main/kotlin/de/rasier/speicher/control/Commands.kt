@@ -19,6 +19,10 @@ sealed interface BatteryCommand {
 
     @Serializable
     data class SetAdaptiveMode(override val batteryId: String, val enabled: Boolean) : BatteryCommand
+
+    /** Software restart of the storage (cloud only). Used to recover the CT002 link after mode switches. */
+    @Serializable
+    data class Reboot(override val batteryId: String) : BatteryCommand
 }
 
 /** Executes commands on real or simulated devices. */

@@ -659,6 +659,7 @@ class ServerHub(
             is BatteryCommand.SetDod -> "$name: Entladetiefe ${c.percent} %"
             is BatteryCommand.SetChargeMode -> "$name: Lademodus ${c.mode}"
             is BatteryCommand.SetAdaptiveMode -> "$name: adaptiver Modus ${if (c.enabled) "an" else "aus"}"
+            is BatteryCommand.Reboot -> "$name: Neustart"
         }
     }
 
@@ -753,6 +754,7 @@ class ServerHub(
         is BatteryCommand.SetDod -> CommandDto(c.batteryId, "dod", c.percent)
         is BatteryCommand.SetChargeMode -> CommandDto(c.batteryId, "chargeMode", if (c.mode == de.rasier.speicher.model.ChargeMode.CHARGE_THEN_DISCHARGE) 1 else 0)
         is BatteryCommand.SetAdaptiveMode -> CommandDto(c.batteryId, "adaptive", if (c.enabled) 1 else 0)
+        is BatteryCommand.Reboot -> CommandDto(c.batteryId, "reboot", 0)
     }
 
     private fun emptyStateDto() = StateDto(

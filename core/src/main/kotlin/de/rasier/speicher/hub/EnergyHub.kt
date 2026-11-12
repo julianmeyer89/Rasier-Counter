@@ -320,6 +320,7 @@ class EnergyHub(
         is BatteryCommand.SetDod -> b.dodPercent == c.percent
         is BatteryCommand.SetChargeMode -> b.chargeMode == c.mode
         is BatteryCommand.SetAdaptiveMode -> b.adaptiveMode == c.enabled
+        is BatteryCommand.Reboot -> false
     }
 
     private fun describe(c: BatteryCommand): String {
@@ -329,6 +330,7 @@ class EnergyHub(
             is BatteryCommand.SetDod -> "$name: Entladetiefe ${c.percent} %"
             is BatteryCommand.SetChargeMode -> "$name: Lademodus ${c.mode}"
             is BatteryCommand.SetAdaptiveMode -> "$name: adaptiver Modus ${if (c.enabled) "an" else "aus"}"
+            is BatteryCommand.Reboot -> "$name: Neustart"
         }
     }
 

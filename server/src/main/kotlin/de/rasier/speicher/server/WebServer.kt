@@ -140,6 +140,7 @@ class WebServer(
         "dod" -> BatteryCommand.SetDod(req.batteryId, req.value)
         "chargeMode" -> BatteryCommand.SetChargeMode(req.batteryId, if (req.value == 1) ChargeMode.CHARGE_THEN_DISCHARGE else ChargeMode.SIMULTANEOUS)
         "adaptive" -> BatteryCommand.SetAdaptiveMode(req.batteryId, req.value == 1)
+        "reboot" -> BatteryCommand.Reboot(req.batteryId)
         else -> null
     }
 

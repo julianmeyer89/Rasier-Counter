@@ -57,5 +57,13 @@ class CloudPayloadsTest {
         assertEquals("cd=3,md=1", CloudPayloads.encode(BatteryCommand.SetChargeMode("x", ChargeMode.CHARGE_THEN_DISCHARGE)))
         assertEquals("cd=3,md=0", CloudPayloads.encode(BatteryCommand.SetChargeMode("x", ChargeMode.SIMULTANEOUS)))
         assertEquals("cd=4,md=1", CloudPayloads.encode(BatteryCommand.SetAdaptiveMode("x", true)))
+        assertEquals("cd=4,md=0", CloudPayloads.encode(BatteryCommand.SetAdaptiveMode("x", false)))
+    }
+
+    @Test
+    fun `reboot is cd 10 and never the factory-reset cd 11`() {
+        val payload = CloudPayloads.encode(BatteryCommand.Reboot("x"))
+        assertEquals("cd=10", payload)
+        assertTrue("cd=11" !in payload) // factory reset must never be produced
     }
 }

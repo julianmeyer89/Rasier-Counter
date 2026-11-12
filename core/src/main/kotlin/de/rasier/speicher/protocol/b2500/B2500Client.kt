@@ -71,6 +71,7 @@ class B2500Client(
                 readWithRetry(s, B2500Protocol.Read.RUNTIME) { B2500Parser.runtime(it) }?.chargeMode == command.mode
             is BatteryCommand.SetAdaptiveMode ->
                 readWithRetry(s, B2500Protocol.Read.TIMERS) { B2500Parser.timers(it) }?.adaptiveMode == command.enabled
+            is BatteryCommand.Reboot -> false // not supported locally; encode() already rejects it
         }
     }
 

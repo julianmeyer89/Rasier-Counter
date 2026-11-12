@@ -73,6 +73,8 @@ object B2500Protocol {
             require(command.enabled) { "Adaptiver Modus kann nur über die Zeitpläne beendet werden" }
             frame(CMD_ENABLE_ADAPTIVE, byteArrayOf(0x00))
         }
+        // Local reboot (0x25) is in FORBIDDEN by design; a restart is only issued over the cloud (cd=10).
+        is BatteryCommand.Reboot -> throw IllegalArgumentException("Neustart ist nur über die Cloud möglich")
     }
 
     fun xor(data: ByteArray, from: Int, to: Int): Byte {
