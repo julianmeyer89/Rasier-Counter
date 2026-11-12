@@ -216,9 +216,10 @@ const BAT_METRICS = [
   { key: "charge", label: "Ladung", field: "charge" },
   { key: "self", label: "Eigenentladung", field: "selfDischarge" },
 ];
-// Distinct hues, assigned per visible series in order.
-const BAT_PALETTE = ["#1565c0", "#ef6c00", "#2e7d32", "#c62828", "#6a1b9a", "#00838f", "#f9a825", "#ad1457"];
-const SOC_COLORS = ["#8e24aa", "#5e35b1", "#00838f"];
+// Fixed colour per (battery, metric): index = batteryIndex*4 + metricIndex, so colours never shift
+// when metrics/batteries are toggled. Battery 0: blue/red/green/amber; battery 1: purple/cyan/orange/brown.
+const BAT_PALETTE = ["#1565c0", "#e53935", "#2e7d32", "#f9a825", "#8e24aa", "#00acc1", "#ef6c00", "#6d4c41"];
+const SOC_COLORS = ["#37474f", "#4527a0", "#00695c"];
 let batView = { mode: localStorage.getItem("batMode") || "day", anchor: new Date() };
 let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetricsV4") || '["pv","output","charge","self"]'));
 let batSoc = (localStorage.getItem("batSoc") ?? "1") === "1";
@@ -299,11 +300,19 @@ function drawBatteryChart() {
   const leftUnit = isPower ? "W" : "kWh";
   const scale = (v) => isPower ? v : (v || 0) / 1000;
   renderBatSum(vis);
+  // Colours are fixed per (battery, metric) by their index in the full lists, so they do not change
+  // when other metrics or batteries are toggled off.
+  const allBats = batData?.series || [];
   const left = [];
-  vis.forEach(b => BAT_METRICS.forEach(m => { if (batMetrics.has(m.key)) left.push({ label: `${b.name} ${m.label}`, values: b[m.field] || [] }); }));
-  left.forEach((s, i) => s.color = BAT_PALETTE[i % BAT_PALETTE.length]);
-  const socSeries = batSoc ? vis.map((b, i) => ({ name: b.name, color: SOC_COLORS[i % SOC_COLORS.length],
-    points: labels.map((_, j) => [j, (b.soc || [])[j]]).filter(p => p[1] != null && p[1] >= 0) })).filter(s => s.points.length) : [];
+  allBats.forEach((b, bi) => {
+    if (batHidden.has(b.id)) return;
+    BAT_METRICS.forEach((m, mi) => {
+      if (!batMetrics.has(m.key)) return;
+      left.push({ label: `${b.name} ${m.label}`, values: b[m.field] || [], color: BAT_PALETTE[(bi * BAT_METRICS.length + mi) % BAT_PALETTE.length] });
+    });
+  });
+  const socSeries = !batSoc ? [] : allBats.map((b, bi) => ({ b, bi })).filter(x => !batHidden.has(x.b.id)).map(({ b, bi }) =>
+    ({ name: b.name, color: SOC_COLORS[bi % SOC_COLORS.length], points: labels.map((_, j) => [j, (b.soc || [])[j]]).filter(p => p[1] != null && p[1] >= 0) })).filter(s => s.points.length);
   const slider = document.getElementById("batSlider"), ro = document.getElementById("batReadout");
   if (!labels.length || (!left.length && !socSeries.length)) {
     if (slider) slider.max = 0;
