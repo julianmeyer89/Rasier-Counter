@@ -85,10 +85,22 @@ class ServerHub(
     private var lastReconnectMs = 0L
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
+    // Capacity-measurement state: per-battery current clean-discharge run, and the persisted samples.
+    private val capWinActive = HashMap<String, Boolean>()
+    private val capWinPeak = HashMap<String, Int>()
+    private val capWinTrough = HashMap<String, Int>()
+    private val capWinLast = HashMap<String, Int>()
+    private val capWinEnergy = HashMap<String, Double>()
+    private val capacitySamplesFile = File(dataDir, "capacity_samples.json")
+    private var capacitySamples: List<CapacitySample> = emptyList()
 
     init {
         // Dashboard settings override the config file so they survive restarts and updates.
         loadSavedSettings()
+        runCatching {
+            if (capacitySamplesFile.exists())
+                capacitySamples = json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(CapacitySample.serializer()), capacitySamplesFile.readText())
+        }.onFailure { log("Kapazitäts-Messungen nicht lesbar: ${it.message}") }
     }
 
     suspend fun poll(nowMs: Long = System.currentTimeMillis()) = mutex.withLock {
@@ -498,6 +510,52 @@ class ServerHub(
         return Math.round((idleSelfWhToday[id] ?: 0.0) / h).toInt()
     }
 
+    /** Accumulates a clean (PV-free) discharge run; finalizes a capacity sample when PV returns or SOC rises. */
+    private fun trackCapacityWindow(b: BatteryState, a: BatteryState, outEnergy: Double, cap: Int?, nowMs: Long) {
+        val id = b.id
+        if (a.totalPvW > IDLE_W || b.totalPvW > IDLE_W) { finalizeCapWindow(id, cap, nowMs); return }
+        val sa = a.socPercent; val sb = b.socPercent
+        if (capWinActive[id] != true || sb > (capWinLast[id] ?: sb)) {
+            if (capWinActive[id] == true) finalizeCapWindow(id, cap, nowMs)
+            capWinActive[id] = true; capWinPeak[id] = sa; capWinTrough[id] = sb; capWinLast[id] = sb; capWinEnergy[id] = outEnergy
+            return
+        }
+        capWinEnergy[id] = (capWinEnergy[id] ?: 0.0) + outEnergy
+        if (sb < (capWinTrough[id] ?: sb)) capWinTrough[id] = sb
+        capWinLast[id] = sb
+    }
+
+    private fun finalizeCapWindow(id: String, deviceCapWh: Int?, nowMs: Long) {
+        if (capWinActive[id] != true) return
+        capWinActive[id] = false
+        val drop = (capWinPeak[id] ?: return) - (capWinTrough[id] ?: return)
+        val energy = capWinEnergy[id] ?: 0.0
+        if (drop < CAP_MIN_DROP_PCT || energy <= 0) return
+        val measured = (energy / drop * 100).roundToInt()
+        if (measured <= 0) return
+        capacitySamples = (capacitySamples + CapacitySample(id, nowMs, measured, drop, deviceCapWh ?: 0)).takeLast(CAP_MAX_SAMPLES)
+        runCatching { capacitySamplesFile.writeText(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(CapacitySample.serializer()), capacitySamples)) }
+            .onFailure { log("Kapazitäts-Messungen speichern fehlgeschlagen: ${it.message}") }
+        addEvents(listOf("${batteryName(id)}: Kapazität gemessen $measured Wh (SOC-Hub $drop %)"), nowMs)
+    }
+
+    private data class CalibInfo(val measured: Int?, val deviationPct: Int?, val recommended: Boolean)
+
+    /** Compares the measured capacity (median of recent clean-discharge samples) to the device's claim. */
+    private fun calibrationInfo(id: String, deviceCapWh: Int?): CalibInfo {
+        val samples = capacitySamples.filter { it.batteryId == id }.takeLast(CAP_SAMPLES_USED)
+        if (samples.size < CAP_MIN_SAMPLES) return CalibInfo(null, null, false)
+        val measured = median(samples.map { it.measuredCapacityWh })
+        if (deviceCapWh == null || deviceCapWh <= 0) return CalibInfo(measured, null, false)
+        val dev = Math.round((deviceCapWh - measured) * 100.0 / deviceCapWh).toInt()
+        return CalibInfo(measured, dev, Math.abs(dev) >= CAP_DEVIATION_PCT)
+    }
+
+    private fun median(xs: List<Int>): Int {
+        val s = xs.sorted(); val n = s.size
+        return if (n == 0) 0 else if (n % 2 == 1) s[n / 2] else (s[n / 2 - 1] + s[n / 2]) / 2
+    }
+
     private fun recordDeviceDays(snapshot: SystemSnapshot) {
         val todayStr = LocalDate.now(zone).toString()
         if (todayStr != selfDisDay) { selfDisDay = todayStr; idleHoursToday.clear(); idleSelfWhToday.clear() }
@@ -542,6 +600,9 @@ class ServerHub(
                         idleSelfWhToday[b.id] = (idleSelfWhToday[b.id] ?: 0.0) + selfWhExact
                     }
                     days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, vInt, selfWh, zone)
+                    // Measure usable capacity over clean (PV-free) discharge runs: energy out of the
+                    // cells (delivered + self-discharge) divided by the SOC drop.
+                    trackCapacityWindow(b, a, deliveredW * hours + selfWhExact, cap, snapshot.timestampMs)
                 }
             }
         }
@@ -613,6 +674,15 @@ class ServerHub(
                 "${b.name}: ~$w W Eigenentladung im Leerlauf (heute ${(idleSelfWhToday[b.id] ?: 0.0).roundToInt()} Wh) – bitte beobachten.", nowMs)
         }
 
+    /** One info alert per battery whose measured capacity deviates enough to suggest a calibration. */
+    private fun calibrationAlerts(batteries: Collection<BatteryState>, nowMs: Long): List<AlertDto> =
+        batteries.mapNotNull { b ->
+            val cal = calibrationInfo(b.id, b.capacityWh)
+            if (!cal.recommended) return@mapNotNull null
+            AlertDto("calib-${b.id}", "INFO", "Kalibrierung empfohlen",
+                "${b.name}: gemessene Kapazität ${cal.measured} Wh weicht ${cal.deviationPct} % von der Anzeige (${b.capacityWh} Wh) ab.", nowMs)
+        }
+
     private fun rebuild(nowMs: Long) {
         val batteries = lastBatteries.values.sortedBy { it.name }
         val nowDay = LocalDate.now(zone).toString()
@@ -654,11 +724,14 @@ class ServerHub(
                 val dd = deviceDays.firstOrNull { d -> d.batteryId == it.id && d.date == nowDay }
                 val delivered = dd?.let { d -> if (d.deliveredWh > 0 || d.outputWh == 0) d.deliveredWh else d.outputWh }
                 val selfW = selfDischargePowerW(it.id)
+                val cal = calibrationInfo(it.id, it.capacityWh)
                 BatteryDto(
                     id = it.id, name = it.name, socPercent = it.socPercent, capacityWh = it.capacityWh,
                     pvInputW = it.pvInputW, outputW = it.outputW, outputEnabled = it.outputEnabled,
                     dodPercent = it.dodPercent, chargeMode = it.chargeMode.name, adaptiveMode = it.adaptiveMode,
-                    dailyPvWh = it.dailyPvWh, dailyOutputWh = it.dailyOutputWh,
+                    dailyPvWh = it.dailyPvWh,
+                    measuredCapacityWh = cal.measured, capacityDeviationPercent = cal.deviationPct, calibrationRecommended = cal.recommended,
+                    dailyOutputWh = it.dailyOutputWh,
                     deliveredTodayWh = delivered, selfDischargeTodayWh = dd?.selfDischargeWh, selfDischargeW = selfW,
                     selfDischargeHigh = selfW != null && selfW > config.selfDischargeAlertW,
                     temperatureC = it.temperatureC,
@@ -666,7 +739,7 @@ class ServerHub(
                 )
             },
             today = today()?.let { EnergyDto.from(it, config.tariff) },
-            alerts = alerts.map { AlertDto.from(it) } + selfDischargeAlerts(batteries, nowMs),
+            alerts = alerts.map { AlertDto.from(it) } + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
             lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
@@ -698,5 +771,10 @@ class ServerHub(
         const val CT_STALE_RECONNECT_MS = 180_000L   // reconnect if the CT002 is silent this long while batteries report
         const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
         const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
+        const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
+        const val CAP_DEVIATION_PCT = 15              // recommend calibration when measured vs claimed differ by this
+        const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
+        const val CAP_SAMPLES_USED = 5                // recent measurements used for the median
+        const val CAP_MAX_SAMPLES = 100               // persisted capacity samples kept
     }
 }

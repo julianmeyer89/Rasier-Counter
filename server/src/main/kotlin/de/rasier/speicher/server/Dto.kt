@@ -61,6 +61,11 @@ data class BatteryDto(
     val chargeMode: String,
     val adaptiveMode: Boolean?,
     val dailyPvWh: Int?,
+    /** Measured usable capacity from clean discharges (Wh), its deviation from the device's claim (%),
+     *  and whether that deviation suggests a calibration. */
+    val measuredCapacityWh: Int? = null,
+    val capacityDeviationPercent: Int? = null,
+    val calibrationRecommended: Boolean = false,
     /** Device daily output counter `bs` (includes self-discharge) — kept for reference. */
     val dailyOutputWh: Int?,
     /** Real energy delivered to the inverter today (integrated live output). */
@@ -192,6 +197,19 @@ data class BatterySeriesDto(
 /** Window energy totals per metric, in Wh, for the sum box. */
 @Serializable
 data class BatteryTotals(val pv: Int = 0, val output: Int = 0, val charge: Int = 0, val selfDischarge: Int = 0)
+
+/**
+ * One measured-capacity sample from a clean (PV-free) discharge run: energy that left the cells
+ * divided by the SOC drop. Compared against the device's claimed capacity to flag SOC drift.
+ */
+@Serializable
+data class CapacitySample(
+    val batteryId: String,
+    val timestampMs: Long,
+    val measuredCapacityWh: Int,
+    val dropPercent: Int,
+    val deviceCapacityWh: Int,
+)
 
 @Serializable
 data class EventDto(val t: Long, val text: String)
