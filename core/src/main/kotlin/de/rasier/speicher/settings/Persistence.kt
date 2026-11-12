@@ -21,6 +21,8 @@ data class HistoryPoint(
     /** Per-battery PV input and output power, in the battery order, for per-battery charts. */
     val batPvW: List<Int> = emptyList(),
     val batOutW: List<Int> = emptyList(),
+    /** CT002 per-phase power (pwr_a/b/c), so a grid spike can be traced to one phase afterwards. */
+    val meterPhaseW: List<Int> = emptyList(),
 )
 
 fun SystemSnapshot.toHistoryPoint() = HistoryPoint(
@@ -31,6 +33,7 @@ fun SystemSnapshot.toHistoryPoint() = HistoryPoint(
     soc = batteries.map { it.socPercent },
     batPvW = batteries.map { it.totalPvW },
     batOutW = batteries.map { it.totalOutputW },
+    meterPhaseW = meter?.phaseW ?: emptyList(),
 )
 
 @Serializable

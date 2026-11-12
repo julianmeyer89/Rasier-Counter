@@ -118,7 +118,14 @@ class CloudDeviceLink(
             if (d.isBattery) {
                 CloudPayloads.parseBattery(fields, d.devid, d.name, d.type, entry.second)?.let { batteries += it }
             } else {
-                CloudPayloads.parseMeter(fields, entry.second)?.let { meter = it }
+                CloudPayloads.parseMeter(fields, entry.second)?.let {
+                    meter = it
+                    // Capture the full raw frame + per-phase split for implausibly high totals, so a
+                    // grid "needle" can be diagnosed (real inrush spread over phases vs. a sensor glitch
+                    // on a single phase). Logged regardless of debug, but rare by nature.
+                    if (kotlin.math.abs(it.totalW) >= METER_OUTLIER_W)
+                        log("CT002-Ausreißer: pwr_t=${it.totalW} W, Phasen=${it.phaseW}, roh='${entry.first}'")
+                }
             }
         }
         if (batteries.isNotEmpty() || meter != null) lastDataMs = nowMs
@@ -245,5 +252,6 @@ class CloudDeviceLink(
 
     companion object {
         private const val STALE_MS = 120_000L
+        private const val METER_OUTLIER_W = 3000   // log the raw CT002 frame above this |pwr_t| for diagnosis
     }
 }
