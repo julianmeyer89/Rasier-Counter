@@ -409,17 +409,29 @@ class ServerHub(
             val pvW = (a.pvW + b.pvW) / 2.0
             val outW = (a.outW + b.outW) / 2.0
             val acW = (outW * eff).coerceAtMost(cap)
-            val importW = (maxOf(a.gridW ?: 0, 0) + maxOf(b.gridW ?: 0, 0)) / 2.0
-            val exportW = (maxOf(-(a.gridW ?: 0), 0) + maxOf(-(b.gridW ?: 0), 0)) / 2.0
-            val houseW = (importW - exportW + acW).coerceAtLeast(0.0)
-            val selfW = (acW - exportW).coerceAtLeast(0.0)
+            // Grid-dependent values only when the CT002 had data in BOTH samples (like the integrator);
+            // otherwise house/self would wrongly count the battery output during a meter gap.
+            val g = gridEnergy(a, b, acW, hours)
             buckets[slot] = buckets[slot] + DailyEnergy(
                 date = buckets[slot].date, pvWh = pvW * hours, batteryOutputWh = outW * hours,
-                inverterAcWh = acW * hours, gridImportWh = importW * hours, gridExportWh = exportW * hours,
-                houseWh = houseW * hours, selfConsumedWh = selfW * hours,
+                inverterAcWh = acW * hours, gridImportWh = g.import, gridExportWh = g.export,
+                houseWh = g.house, selfConsumedWh = g.self,
             )
         }
         return buckets.map { it.date to it }
+    }
+
+    private class GridEnergy(val import: Double, val export: Double, val house: Double, val self: Double)
+
+    /** Grid import/export/house/self energy for one interval, or all zero when the CT002 had no data. */
+    private fun gridEnergy(a: HistoryPoint, b: HistoryPoint, acW: Double, hours: Double): GridEnergy {
+        val ga = a.gridW; val gb = b.gridW
+        if (ga == null || gb == null) return GridEnergy(0.0, 0.0, 0.0, 0.0)
+        val importW = (maxOf(ga, 0) + maxOf(gb, 0)) / 2.0
+        val exportW = (maxOf(-ga, 0) + maxOf(-gb, 0)) / 2.0
+        val houseW = (importW - exportW + acW).coerceAtLeast(0.0)
+        val selfW = (acW - exportW).coerceAtLeast(0.0)
+        return GridEnergy(importW * hours, exportW * hours, houseW * hours, selfW * hours)
     }
 
     /** Hourly buckets of one day, integrated from the power history (only available for recent days). */
@@ -438,14 +450,11 @@ class ServerHub(
             val pvW = (a.pvW + b.pvW) / 2.0
             val outW = (a.outW + b.outW) / 2.0
             val acW = (outW * eff).coerceAtMost(cap)
-            val importW = (maxOf(a.gridW ?: 0, 0) + maxOf(b.gridW ?: 0, 0)) / 2.0
-            val exportW = (maxOf(-(a.gridW ?: 0), 0) + maxOf(-(b.gridW ?: 0), 0)) / 2.0
-            val houseW = (importW - exportW + acW).coerceAtLeast(0.0)
-            val selfW = (acW - exportW).coerceAtLeast(0.0)
+            val g = gridEnergy(a, b, acW, hours)
             buckets[hour] = buckets[hour] + DailyEnergy(
                 date = buckets[hour].date, pvWh = pvW * hours, batteryOutputWh = outW * hours,
-                inverterAcWh = acW * hours, gridImportWh = importW * hours, gridExportWh = exportW * hours,
-                houseWh = houseW * hours, selfConsumedWh = selfW * hours,
+                inverterAcWh = acW * hours, gridImportWh = g.import, gridExportWh = g.export,
+                houseWh = g.house, selfConsumedWh = g.self,
             )
         }
         return buckets.mapIndexed { h, e -> "${"%02d".format(h)}h" to e.copy(date = "${"%02d".format(h)}h") }
