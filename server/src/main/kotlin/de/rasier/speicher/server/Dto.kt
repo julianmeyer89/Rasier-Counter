@@ -169,6 +169,7 @@ data class SettingsDto(
     val ct002PollIntervalSeconds: Double = 2.0,
     val batteryPollIntervalSeconds: Int = 5,
     val selfDischargeAlertW: Int = 25,
+    val calibrationDeviationPercent: Int = 15,
     val automationsMayWrite: Boolean,
     val balancerEnabled: Boolean,
     val calibrationIntervalDays: Int,

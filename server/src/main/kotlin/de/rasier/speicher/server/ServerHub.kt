@@ -231,6 +231,7 @@ class ServerHub(
             ct002PollIntervalSeconds = update.ct002PollIntervalSeconds.coerceIn(0.5, 3600.0),
             batteryPollIntervalSeconds = update.batteryPollIntervalSeconds.coerceIn(5, 3600),
             selfDischargeAlertW = update.selfDischargeAlertW.coerceIn(1, 1000),
+            calibrationDeviationPercent = update.calibrationDeviationPercent.coerceIn(1, 100),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),
@@ -257,6 +258,7 @@ class ServerHub(
         ct002PollIntervalSeconds = config.ct002PollIntervalSeconds,
         batteryPollIntervalSeconds = config.batteryPollIntervalSeconds,
         selfDischargeAlertW = config.selfDischargeAlertW,
+        calibrationDeviationPercent = config.calibrationDeviationPercent,
         automationsMayWrite = config.automationsMayWrite,
         balancerEnabled = config.automation.balancer.enabled,
         calibrationIntervalDays = config.automation.calibration.intervalDays,
@@ -548,7 +550,7 @@ class ServerHub(
         val measured = median(samples.map { it.measuredCapacityWh })
         if (deviceCapWh == null || deviceCapWh <= 0) return CalibInfo(measured, null, false)
         val dev = Math.round((deviceCapWh - measured) * 100.0 / deviceCapWh).toInt()
-        return CalibInfo(measured, dev, Math.abs(dev) >= CAP_DEVIATION_PCT)
+        return CalibInfo(measured, dev, Math.abs(dev) >= config.calibrationDeviationPercent)
     }
 
     private fun median(xs: List<Int>): Int {
@@ -772,7 +774,6 @@ class ServerHub(
         const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
         const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
-        const val CAP_DEVIATION_PCT = 15              // recommend calibration when measured vs claimed differ by this
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median
         const val CAP_MAX_SAMPLES = 100               // persisted capacity samples kept

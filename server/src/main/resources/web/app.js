@@ -84,9 +84,21 @@ const EFFICIENCY_INFO = `
 <p class="note"><b>Wann die Änderung rückwirkt:</b> Die bereits gespeicherten Tagessummen (Woche/Monat/Jahr) werden <b>nicht</b> neu berechnet – sie behalten den Wirkungsgrad, mit dem sie aufgezeichnet wurden; nur neue Messungen ab jetzt nutzen den neuen Wert. Die Stunden-Ansicht der letzten rund zwei Tage und die Werte unter „Zählerbasiert (exakt)“ werden dagegen bei jedem Aufruf neu gerechnet und übernehmen den neuen Wirkungsgrad sofort, auch rückwirkend.</p>
 <p class="note">Realistisch für den HMS-1600-4T sind etwa 92–96 %. Zu hoch gesetzt wirken die Werte zu optimistisch, zu niedrig zu pessimistisch.</p>`;
 
+const CALIBRATION_INFO = `
+<p class="note">Der Speicher <b>schätzt</b> seinen Ladestand (%). Diese Schätzung driftet mit der Zeit – dann passt die Prozentanzeige nicht mehr zur wirklich gespeicherten Energie. Eine Kalibrierung (voll laden, dann leer entladen) synchronisiert sie wieder.</p>
+<p class="note"><b>Wie wir es erkennen:</b> In sauberen, PV‑freien Entladungen (meist nachts) messen wir die <i>echte</i> Kapazität – unabhängig vom Ladestand:</p>
+<table class="info-table">
+  <tr><th>Wert</th><th>Berechnung</th></tr>
+  <tr><td>Gemessene Kapazität</td><td>= (abgegebene + selbstentladene Energie) ÷ SOC‑Hub × 100</td></tr>
+  <tr><td>Abweichung</td><td>= (angezeigte Kapazität − gemessene) ÷ angezeigte Kapazität</td></tr>
+</table>
+<p class="note">Übersteigt die Abweichung den hier eingestellten Wert (bei mindestens zwei Messungen), erscheint <b>„Kalibrierung empfohlen"</b>. Niedriger = empfindlicher.</p>
+<p class="note"><b>Hinweis:</b> Es braucht Entladungen mit großem SOC‑Hub (mind. 25 %) ohne PV; die ersten Messwerte entstehen also erst nach ein paar solchen Nächten. Eine dauerhaft kleinere gemessene Kapazität kann auch normale Alterung sein – die Kalibrierung richtet die Anzeige trotzdem wieder nach der Realität aus.</p>`;
+
 const INFO = {
   values: { title: "Was bedeuten die Werte?", body: VALUE_INFO },
   efficiency: { title: "Wirkungsgrad", body: EFFICIENCY_INFO },
+  calibration: { title: "Kalibrierung empfohlen", body: CALIBRATION_INFO },
 };
 
 function openInfo(key) {
@@ -627,6 +639,7 @@ async function renderSettings() {
     <label class="field">Kalibrierung alle … Tage (0 = manuell)</label><input id="s_cal" type="number" value="${s.calibrationIntervalDays}">
     <label class="field">Warnung Eigenentladung ab (W)</label><input id="s_selfdis" type="number" min="1" value="${s.selfDischargeAlertW}">
     <div class="note">Warnt, wenn ein Speicher im Leerlauf mehr als diese Leistung durch Eigenentladung verliert. Passe den Wert an, sobald du den Normalwert kennst (siehe „Eigenentladung heute" je Speicher).</div>
+    <label class="field">Kalibrierung empfehlen ab Abweichung (%) <button class="infobtn infobtn-inline" onclick="openInfo('calibration')" title="Erklärung">i</button></label><input id="s_calibdev" type="number" min="1" value="${s.calibrationDeviationPercent}">
     </div>
     <div style="padding:0 6px"><button class="primary" onclick="saveSettings()">Speichern</button></div>`;
   document.getElementById("settings").innerHTML = html;
@@ -638,6 +651,7 @@ async function saveSettings() {
     inverterEfficiencyPercent: +v("s_eff"), inverterMaxW: +v("s_invmax"),
     ct002PollIntervalSeconds: +v("s_pollct"), batteryPollIntervalSeconds: +v("s_pollbat"),
     selfDischargeAlertW: +v("s_selfdis"),
+    calibrationDeviationPercent: +v("s_calibdev"),
     automationsMayWrite: document.getElementById("s_write").checked,
     balancerEnabled: document.getElementById("s_bal").checked,
     calibrationIntervalDays: +v("s_cal"),

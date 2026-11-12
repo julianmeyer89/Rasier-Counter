@@ -31,6 +31,8 @@ data class ServerConfig(
     val cloudHttpIntervalSeconds: Int,
     /** Warn when a battery's idle self-discharge exceeds this power (W). */
     val selfDischargeAlertW: Int,
+    /** Recommend calibration when measured vs claimed capacity deviate by at least this (%). */
+    val calibrationDeviationPercent: Int,
     val automationsMayWrite: Boolean,
     val useNoFlashCommands: Boolean,
     /** Log the raw cloud payloads for diagnosis. */
@@ -72,6 +74,7 @@ data class ServerConfig(
                 batteryPollIntervalSeconds = int("battery_poll_interval_seconds", int("poll_interval_seconds", 5)).coerceIn(5, 3600),
                 cloudHttpIntervalSeconds = int("cloud_http_interval_seconds", 300),
                 selfDischargeAlertW = int("self_discharge_alert_w", 25),
+                calibrationDeviationPercent = int("calibration_deviation_percent", 15),
                 automationsMayWrite = bool("automations_may_write", false),
                 useNoFlashCommands = bool("use_no_flash_commands", false),
                 debug = bool("debug", false),

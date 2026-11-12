@@ -38,6 +38,10 @@ battery_poll_interval_seconds=5
 # verliert (W). Auch in der Weboberfläche einstellbar.
 self_discharge_alert_w=25
 
+# "Kalibrierung empfohlen" ab dieser Abweichung zwischen gemessener und angezeigter
+# Kapazität (%). Auch in der Weboberfläche einstellbar.
+calibration_deviation_percent=15
+
 # Automatik darf Einstellungen am Speicher ändern (Kalibrierung, Ausgleich).
 # Zu Beginn false lassen und erst einschalten, wenn die Werte stimmen.
 automations_may_write=false
