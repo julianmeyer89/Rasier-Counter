@@ -1,6 +1,7 @@
 package de.rasier.speicher.server
 
 import de.rasier.speicher.control.AutomationSettings
+import de.rasier.speicher.control.BatteryCommand
 import de.rasier.speicher.control.CalibrationSettings
 import de.rasier.speicher.energy.SystemConfig
 import de.rasier.speicher.energy.Tariff
@@ -50,6 +51,18 @@ class ServerHubTest {
         assertTrue(c != null && c.running)
         hub.abortCalibration()
         assertTrue(hub.state.value.calibration?.running == false)
+    }
+
+    @Test
+    fun `a mode switch briefly pauses CT002 polling`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val link = SimDeviceLink(zone)
+        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        hub.poll()
+        val before = link.meterPolls
+        hub.manualCommand(BatteryCommand.SetAdaptiveMode(link.batteryIds.first(), false))
+        hub.poll() // within the pause window -> CT002 not polled
+        assertEquals(before, link.meterPolls)
     }
 
     @Test

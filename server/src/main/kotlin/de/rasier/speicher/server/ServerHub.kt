@@ -5,6 +5,8 @@ import de.rasier.speicher.control.AutomationEngine
 import de.rasier.speicher.control.AutomationSettings
 import de.rasier.speicher.control.AutomationState
 import de.rasier.speicher.control.BatteryCommand
+import de.rasier.speicher.control.CalibrationPhase
+import de.rasier.speicher.control.CalibrationRun
 import de.rasier.speicher.control.GroupState
 import de.rasier.speicher.energy.DailyEnergy
 import de.rasier.speicher.energy.DeviceDay
@@ -21,7 +23,11 @@ import de.rasier.speicher.settings.EventEntry
 import de.rasier.speicher.settings.FileStore
 import de.rasier.speicher.settings.HistoryPoint
 import de.rasier.speicher.settings.toHistoryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -83,6 +89,11 @@ class ServerHub(
     private val idleSelfWhToday = HashMap<String, Double>()
     private var ctStaleSinceMs = 0L   // 0 = CT002 healthy; else since when it went silent while batteries report
     private var lastReconnectMs = 0L
+    // While set in the future, CT002 poll requests are suppressed (during an Auto/Manual switch) so the
+    // mode-change command is not drowned out by meter polls. Cached CT readings still flow through.
+    private var ctPauseUntilMs = 0L
+    // Background scope for fire-and-forget push notifications (never blocks the poll loop).
+    private val pushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
     // Per-battery reachability, so a reboot (device stops answering, then returns) is visible in the log.
@@ -108,9 +119,10 @@ class ServerHub(
     suspend fun poll(nowMs: Long = System.currentTimeMillis()) = mutex.withLock {
         // The CT002 is polled every cycle; the batteries only when their (longer) interval has elapsed.
         val pollBattery = nowMs - lastBatteryPollMs >= config.batteryPollIntervalSeconds * 1000L
+        val ctPaused = nowMs < ctPauseUntilMs
         val replyWaitMs = (config.ct002PollIntervalSeconds * 600).toLong().coerceIn(300L, 1200L)
         val snapshot = try {
-            link.poll(nowMs, pollMeter = true, pollBattery = pollBattery, replyWaitMs = replyWaitMs)
+            link.poll(nowMs, pollMeter = !ctPaused, pollBattery = pollBattery, replyWaitMs = replyWaitMs)
         } catch (e: Exception) {
             log("Abfrage fehlgeschlagen: ${e.message}")
             addEvents(listOf("Abfrage fehlgeschlagen: ${e.message}"), nowMs)
@@ -122,13 +134,17 @@ class ServerHub(
         // A CT002 reading counts as "fresh" when its timestamp advanced since the last cycle.
         val meterTs = snapshot.meter?.timestampMs ?: 0L
         val meterFresh = meterTs > lastMeterTimestampMs
-        recordMeterFresh(meterFresh)
+        // A deliberate CT002 pause (mode switch) must not count against the quality gauge or trip the
+        // self-heal reconnect: skip the freshness/stale accounting while paused.
+        if (!ctPaused) {
+            recordMeterFresh(meterFresh)
+            // Self-heal: if the CT002 goes silent while the batteries keep reporting, the CT's cloud
+            // topic has likely rotated and we are subscribed to the old one. Mark since when, so the end
+            // of this method can reconnect (a fresh login re-derives the current topic).
+            if (meterFresh) ctStaleSinceMs = 0L
+            else if (snapshot.batteries.isNotEmpty() && ctStaleSinceMs == 0L) ctStaleSinceMs = nowMs
+        }
         if (meterTs > 0L) lastMeterTimestampMs = meterTs
-        // Self-heal: if the CT002 goes silent while the batteries keep reporting, the CT's cloud
-        // topic has likely rotated and we are subscribed to the old one. Mark since when, so the end
-        // of this method can reconnect (a fresh login re-derives the current topic).
-        if (meterFresh) ctStaleSinceMs = 0L
-        else if (snapshot.batteries.isNotEmpty() && ctStaleSinceMs == 0L) ctStaleSinceMs = nowMs
 
         snapshot.batteries.forEach { lastBatteries[it.id] = it }
         snapshot.meter?.let { lastMeter = it }
@@ -138,11 +154,13 @@ class ServerHub(
         integrator.add(snapshot)
         if (!config.demo) recordDeviceDays(snapshot)
 
+        val prevCal = autoState.calibration
         val tick = engine.tick(autoState, snapshot, nowMs)
         autoState = tick.state
         applyCommands(tick.commands, nowMs, automatic = true)
         alerts = tick.alerts
         addEvents(tick.events, nowMs)
+        notifyCalibration(prevCal, autoState.calibration, nowMs)
         store.saveAutomation(autoState)
         store.saveAlerts(alerts)
 
@@ -183,9 +201,11 @@ class ServerHub(
     }
 
     suspend fun manualCommand(command: BatteryCommand): Boolean = mutex.withLock {
+        val now = System.currentTimeMillis()
         val ok = runCatching { link.send(command) }.getOrDefault(false)
-        addEvents(listOf((if (ok) "Gesendet: " else "Fehlgeschlagen: ") + describe(command)), System.currentTimeMillis())
-        rebuild(System.currentTimeMillis())
+        addEvents(listOf((if (ok) "Gesendet: " else "Fehlgeschlagen: ") + describe(command)), now)
+        if (ok && command is BatteryCommand.SetAdaptiveMode) pauseCtForSwitch(now)
+        rebuild(now)
         ok
     }
 
@@ -202,10 +222,12 @@ class ServerHub(
 
     suspend fun abortCalibration() = mutex.withLock {
         val now = System.currentTimeMillis()
+        val prevCal = autoState.calibration
         val r = engine.abortCalibration(autoState, now)
         autoState = r.state
         applyCommands(r.commands, now, automatic = true)
         addEvents(r.events, now)
+        notifyCalibration(prevCal, autoState.calibration, now)
         store.saveAutomation(autoState)
         rebuild(now)
     }
@@ -235,6 +257,7 @@ class ServerHub(
             batteryPollIntervalSeconds = update.batteryPollIntervalSeconds.coerceIn(5, 3600),
             selfDischargeAlertW = update.selfDischargeAlertW.coerceIn(1, 1000),
             calibrationDeviationPercent = update.calibrationDeviationPercent.coerceIn(1, 100),
+            ntfyTopic = update.ntfyTopic.trim().take(120),
             automationsMayWrite = update.automationsMayWrite,
             automation = config.automation.copy(
                 balancer = config.automation.balancer.copy(enabled = update.balancerEnabled),
@@ -275,6 +298,7 @@ class ServerHub(
         calibrationDischargeStartMinuteOfDay = config.automation.calibration.dischargeStartMinuteOfDay,
         calibrationToleranceSocPercent = config.automation.calibration.chargeToleranceSocPercent,
         calibrationRecoveryAttempts = config.automation.calibration.recoveryAttempts,
+        ntfyTopic = config.ntfyTopic,
     )
 
     fun history(hours: Int): HistoryDto {
@@ -660,8 +684,55 @@ class ServerHub(
             if (automatic) writeGuard.record(c.batteryId, nowMs, zone)
             val ok = runCatching { link.send(c) }.getOrDefault(false)
             addEvents(listOf((if (ok) "Automatik: " else "Automatik fehlgeschlagen: ") + describe(c)), nowMs)
+            if (ok && c is BatteryCommand.SetAdaptiveMode) pauseCtForSwitch(nowMs)
         }
         if (automatic) suggestions = newSuggestions
+    }
+
+    /** Suppresses CT002 polling briefly so a mode switch is not drowned out by meter poll requests. */
+    private fun pauseCtForSwitch(nowMs: Long) {
+        if (ctPauseUntilMs >= nowMs + CT_PAUSE_MS) return // already paused far enough
+        ctPauseUntilMs = nowMs + CT_PAUSE_MS
+        addEvents(listOf("CT002-Abfrage ${CT_PAUSE_MS / 1000} s pausiert (Moduswechsel)"), nowMs)
+    }
+
+    /** Pushes a notification for each newly finished calibration result (per battery, and on stop). */
+    private fun notifyCalibration(prev: CalibrationRun?, next: CalibrationRun?, nowMs: Long) {
+        next ?: return
+        val prevCount = prev?.results?.size ?: 0
+        for (r in next.results.drop(prevCount)) {
+            val name = lastBatteries[r.batteryId]?.name ?: autoState.names[r.batteryId] ?: r.batteryId
+            if (r.success) pushNtfy("Kalibrierung fertig", "$name: ${r.message}", "default", "battery,white_check_mark")
+            else pushNtfy("Kalibrierung gestoppt", "$name: ${r.message}", "high", "warning")
+        }
+        // Whole batch done (more than one battery): a short summary on top of the per-battery messages.
+        if (next.phase == CalibrationPhase.DONE && prev?.finished != true && next.queue.size > 1) {
+            val okCount = next.results.count { it.success }
+            pushNtfy("Kalibrierung abgeschlossen", "$okCount/${next.queue.size} Speicher kalibriert.", "default", "white_check_mark")
+        }
+    }
+
+    /** Fire-and-forget push to ntfy.sh (no-op when no topic is configured). Never blocks the poll loop. */
+    private fun pushNtfy(title: String, message: String, priority: String, tags: String) {
+        val topic = config.ntfyTopic.ifBlank { return }
+        val base = config.ntfyBaseUrl.trimEnd('/')
+        pushScope.launch {
+            runCatching {
+                val conn = java.net.URI("$base/$topic").toURL().openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Title", title)          // ASCII titles only (HTTP header)
+                conn.setRequestProperty("Priority", priority)
+                conn.setRequestProperty("Tags", tags)
+                conn.outputStream.use { it.write(message.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                conn.inputStream.use { it.readBytes() }
+                conn.disconnect()
+                if (code !in 200..299) log("ntfy-Push HTTP $code")
+            }.onFailure { log("ntfy-Push fehlgeschlagen: ${it.message}") }
+        }
     }
 
     private fun addEvents(texts: List<String>, nowMs: Long) {
@@ -803,6 +874,7 @@ class ServerHub(
         const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
         const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
         const val REACH_STALE_MS = 30_000L            // no battery frame for this long = "not reachable" (reboot visible)
+        const val CT_PAUSE_MS = 20_000L               // suppress CT002 polling this long around a mode switch
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median

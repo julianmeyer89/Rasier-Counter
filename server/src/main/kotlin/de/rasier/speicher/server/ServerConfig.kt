@@ -35,6 +35,9 @@ data class ServerConfig(
     val calibrationDeviationPercent: Int,
     val automationsMayWrite: Boolean,
     val useNoFlashCommands: Boolean,
+    /** ntfy.sh topic for push messages (empty = push disabled) and its base server URL. */
+    val ntfyTopic: String = "",
+    val ntfyBaseUrl: String = "https://ntfy.sh",
     /** Log the raw cloud payloads for diagnosis. */
     val debug: Boolean,
     val tariff: Tariff,
@@ -77,6 +80,8 @@ data class ServerConfig(
                 calibrationDeviationPercent = int("calibration_deviation_percent", 15),
                 automationsMayWrite = bool("automations_may_write", false),
                 useNoFlashCommands = bool("use_no_flash_commands", false),
+                ntfyTopic = str("ntfy_topic"),
+                ntfyBaseUrl = str("ntfy_base_url", "https://ntfy.sh"),
                 debug = bool("debug", false),
                 tariff = Tariff(
                     importCentPerKwh = dbl("import_cent_per_kwh", 30.0),

@@ -110,11 +110,23 @@ const CALIBPROC_INFO = `
 </table>
 <p class="note">Danach werden deine ursprünglichen Einstellungen (DoD, Lademodus, Auto) wiederhergestellt.</p>`;
 
+const NTFY_INFO = `
+<p class="note"><b>ntfy.sh</b> ist ein kostenloser Push-Dienst. Du bekommst eine Handy-Benachrichtigung, wenn eine Kalibrierung je Speicher <b>fertig</b> ist oder <b>gestoppt</b> wurde (z. B. wenn die Nulleinspeisung nach allen Versuchen nicht lief).</p>
+<p class="note"><b>Einrichten:</b></p>
+<table class="info-table">
+  <tr><th>Schritt</th><th>Was tun</th></tr>
+  <tr><td>1</td><td>App „ntfy" installieren (Android/iOS) oder <i>ntfy.sh</i> im Browser öffnen.</td></tr>
+  <tr><td>2</td><td>Ein eigenes, schwer zu erratendes Thema abonnieren, z. B. <code>rasier-speicher-7h3k9</code>.</td></tr>
+  <tr><td>3</td><td>Genau dieses Thema hier eintragen und speichern.</td></tr>
+</table>
+<p class="note"><b>Wichtig:</b> Jeder, der das Thema kennt, kann die Nachrichten mitlesen – wähle es zufällig und teile es nicht. Feld leer lassen schaltet Push aus.</p>`;
+
 const INFO = {
   values: { title: "Was bedeuten die Werte?", body: VALUE_INFO },
   efficiency: { title: "Wirkungsgrad", body: EFFICIENCY_INFO },
   calibration: { title: "Kalibrierung empfohlen", body: CALIBRATION_INFO },
   calibproc: { title: "Kalibrier‑Ablauf", body: CALIBPROC_INFO },
+  ntfy: { title: "Push über ntfy.sh", body: NTFY_INFO },
 };
 
 function openInfo(key) {
@@ -209,7 +221,6 @@ function renderBatteries(s) {
       <button class="sec" onclick="sendCmd('${b.id}','chargeMode', ${b.chargeMode === "CHARGE_THEN_DISCHARGE" ? 0 : 1})">Lademodus wechseln</button>
       ${b.adaptiveMode === true ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',0)">Auf Manuell (Zeitplan)</button>` : ""}
       ${b.adaptiveMode === false ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',1)">Auf Automatik</button>` : ""}
-      <button class="sec" onclick="rebootBattery('${b.id}','${b.name}')">Neustart (Test)</button>
     </div>`;
   }
   if (s.suggestions && s.suggestions.length) {
@@ -373,15 +384,6 @@ async function sendCmd(batteryId, type, value) {
     const r = await api("command", { method: "POST", body: JSON.stringify({ batteryId, type, value }) });
     toast(r.ok ? "Gesendet" : "Fehlgeschlagen");
     setTimeout(refresh, 1500);
-  } catch (e) { toast("Fehler: " + e.message); }
-}
-
-async function rebootBattery(batteryId, name) {
-  if (!confirm(`${name} aus der Ferne NEU STARTEN?\n\nDer Speicher ist danach ~1–2 Minuten offline und verbindet sich neu.\n(Dies sendet cd=10 – nur Neustart, kein Werksreset.)`)) return;
-  try {
-    const r = await api("command", { method: "POST", body: JSON.stringify({ batteryId, type: "reboot", value: 0 }) });
-    toast(r.ok ? "Neustart gesendet" : "Fehlgeschlagen");
-    setTimeout(refresh, 3000);
   } catch (e) { toast("Fehler: " + e.message); }
 }
 
@@ -671,6 +673,7 @@ async function renderSettings() {
     <label class="field">Warnung Eigenentladung ab (W)</label><input id="s_selfdis" type="number" min="1" value="${s.selfDischargeAlertW}">
     <div class="note">Warnt, wenn ein Speicher im Leerlauf mehr als diese Leistung durch Eigenentladung verliert. Passe den Wert an, sobald du den Normalwert kennst (siehe „Eigenentladung heute" je Speicher).</div>
     <label class="field">Kalibrierung empfehlen ab Abweichung (%) <button class="infobtn infobtn-inline" onclick="openInfo('calibration')" title="Erklärung">i</button></label><input id="s_calibdev" type="number" min="1" value="${s.calibrationDeviationPercent}">
+    <label class="field">Push-Benachrichtigung: ntfy.sh-Thema (leer = aus) <button class="infobtn infobtn-inline" onclick="openInfo('ntfy')" title="Erklärung">i</button></label><input id="s_ntfy" type="text" placeholder="z. B. rasier-speicher-7h3k" value="${s.ntfyTopic || ""}">
     </div>
     <div style="padding:0 6px"><button class="primary" onclick="saveSettings()">Speichern</button></div>`;
   document.getElementById("settings").innerHTML = html;
@@ -690,6 +693,7 @@ async function saveSettings() {
     calibrationDischargeStartMinuteOfDay: timeToMin(v("s_caltime")),
     calibrationToleranceSocPercent: +v("s_caltol"),
     calibrationRecoveryAttempts: +v("s_calrec"),
+    ntfyTopic: v("s_ntfy").trim(),
   };
   await api("settings", { method: "POST", body: JSON.stringify(body) });
   toast("Gespeichert");

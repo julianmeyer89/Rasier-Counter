@@ -178,6 +178,8 @@ data class SettingsDto(
     val calibrationDischargeStartMinuteOfDay: Int = 120,
     val calibrationToleranceSocPercent: Int = 98,
     val calibrationRecoveryAttempts: Int = 3,
+    /** ntfy.sh topic for push notifications (empty = off). */
+    val ntfyTopic: String = "",
 )
 
 /**

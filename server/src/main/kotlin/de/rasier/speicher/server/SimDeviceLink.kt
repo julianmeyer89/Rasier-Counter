@@ -10,10 +10,15 @@ class SimDeviceLink(zone: ZoneId = ZoneId.systemDefault()) : DeviceLink {
     private val sim = SimulatedSystem(zone)
     private var lastMs: Long? = null
 
+    /** How often the CT002 was actually polled — lets tests observe the mode-switch pause. */
+    var meterPolls = 0
+        private set
+
     override suspend fun connect() {}
 
     override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long): SystemSnapshot {
         lastMs = nowMs
+        if (pollMeter) meterPolls++
         return sim.advance(nowMs)
     }
 
