@@ -76,6 +76,11 @@ class ServerHub(
     private var lastBatterySnapshot: SystemSnapshot? = null
     private val chargeRemainder = HashMap<String, Double>()
     private val dischargeRemainder = HashMap<String, Double>()
+    private val deliveredRemainder = HashMap<String, Double>()
+    // Today's idle self-discharge, per battery, for the "W" estimate and anomaly alert; reset at midnight.
+    private var selfDisDay = ""
+    private val idleHoursToday = HashMap<String, Double>()
+    private val idleSelfWhToday = HashMap<String, Double>()
     private var ctStaleSinceMs = 0L   // 0 = CT002 healthy; else since when it went silent while batteries report
     private var lastReconnectMs = 0L
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
@@ -273,7 +278,9 @@ class ServerHub(
                 charge = keys.map { k -> byKey[k]?.sumOf { it.chargeWh } ?: 0 },
                 discharge = keys.map { k -> byKey[k]?.sumOf { it.dischargeWh } ?: 0 },
                 pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 },
-                output = keys.map { k -> byKey[k]?.sumOf { it.outputWh } ?: 0 },
+                // Real delivered output; fall back to the device counter for days before deliveredWh existed.
+                output = keys.map { k -> byKey[k]?.sumOf { if (it.deliveredWh > 0 || it.outputWh == 0) it.deliveredWh else it.outputWh } ?: 0 },
+                selfDischarge = keys.map { k -> byKey[k]?.sumOf { it.selfDischargeWh } ?: 0 },
                 soc = keys.map { -1 },
             )
         }
@@ -296,6 +303,7 @@ class ServerHub(
         val discharge = Array(ids.size) { DoubleArray(slots) }
         val pv = Array(ids.size) { DoubleArray(slots) }
         val output = Array(ids.size) { DoubleArray(slots) }
+        val selfDis = Array(ids.size) { DoubleArray(slots) }
         val socSum = Array(ids.size) { DoubleArray(slots) }
         val socCnt = Array(ids.size) { IntArray(slots) }
         for (p in points) {
@@ -324,6 +332,11 @@ class ServerHub(
                     pv[idx][slot] += (apv + bpv) / 2.0 * hours
                     val aout = a.batOutW.getOrNull(idx) ?: 0; val bout = b.batOutW.getOrNull(idx) ?: 0
                     output[idx][slot] += (aout + bout) / 2.0 * hours
+                    // Self-discharge: SOC fell while idle (no output, no PV) -> energy lost, not delivered.
+                    if (sa != null && sb != null && sb < sa && caps[idx] > 0 &&
+                        aout <= IDLE_W && bout <= IDLE_W && apv <= IDLE_W && bpv <= IDLE_W) {
+                        selfDis[idx][slot] += (sa - sb) / 100.0 * caps[idx]
+                    }
                 }
             }
         }
@@ -337,6 +350,7 @@ class ServerHub(
                 discharge = discharge[idx].map { it.roundToInt() },
                 pv = pv[idx].map { it.roundToInt() },
                 output = output[idx].map { it.roundToInt() },
+                selfDischarge = selfDis[idx].map { it.roundToInt() },
                 soc = (0 until slots).map { if (socCnt[idx][it] > 0) (socSum[idx][it] / socCnt[idx][it]).roundToInt() else -1 },
             )
         }
@@ -481,7 +495,16 @@ class ServerHub(
         return (meterFreshWindow.count { it } * 100 / meterFreshWindow.size)
     }
 
+    /** Estimated idle self-discharge power today (W), or null without enough idle time to judge. */
+    private fun selfDischargePowerW(id: String): Int? {
+        val h = idleHoursToday[id] ?: return null
+        if (h < 0.25) return null
+        return Math.round((idleSelfWhToday[id] ?: 0.0) / h).toInt()
+    }
+
     private fun recordDeviceDays(snapshot: SystemSnapshot) {
+        val todayStr = LocalDate.now(zone).toString()
+        if (todayStr != selfDisDay) { selfDisDay = todayStr; idleHoursToday.clear(); idleSelfWhToday.clear() }
         var days = deviceDays
         for (b in snapshot.batteries) {
             days = MeterEvaluation.updateDeviceDays(days, b.id, b.timestampMs, b.dailyPvWh, b.dailyOutputWh, zone)
@@ -501,12 +524,28 @@ class ServerHub(
                     val netB = b.totalPvW - b.totalOutputW
                     val chargeW = (maxOf(netA, 0) + maxOf(netB, 0)) / 2.0
                     val dischargeW = (maxOf(-netA, 0) + maxOf(-netB, 0)) / 2.0
+                    // Real delivered energy = integral of the live output (g1/g2), NOT the device
+                    // counter `bs` which also counts self-discharge.
+                    val deliveredW = (a.totalOutputW + b.totalOutputW) / 2.0
                     val cTot = (chargeRemainder[b.id] ?: 0.0) + chargeW * hours
                     val dTot = (dischargeRemainder[b.id] ?: 0.0) + dischargeW * hours
-                    val cInt = cTot.toInt(); val dInt = dTot.toInt()
+                    val vTot = (deliveredRemainder[b.id] ?: 0.0) + deliveredW * hours
+                    val cInt = cTot.toInt(); val dInt = dTot.toInt(); val vInt = vTot.toInt()
                     chargeRemainder[b.id] = cTot - cInt
                     dischargeRemainder[b.id] = dTot - dInt
-                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, zone)
+                    deliveredRemainder[b.id] = vTot - vInt
+                    // Self-discharge: SOC fell while the battery was idle (no output, no PV in either
+                    // sample). That energy left the cells without being delivered — a loss, not output.
+                    val idle = a.totalOutputW <= IDLE_W && b.totalOutputW <= IDLE_W && a.totalPvW <= IDLE_W && b.totalPvW <= IDLE_W
+                    val cap = b.capacityWh ?: a.capacityWh
+                    val selfWhExact = if (idle && cap != null && b.socPercent < a.socPercent)
+                        (a.socPercent - b.socPercent) / 100.0 * cap else 0.0
+                    val selfWh = Math.round(selfWhExact).toInt()
+                    if (idle) {
+                        idleHoursToday[b.id] = (idleHoursToday[b.id] ?: 0.0) + hours
+                        idleSelfWhToday[b.id] = (idleSelfWhToday[b.id] ?: 0.0) + selfWhExact
+                    }
+                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, vInt, selfWh, zone)
                 }
             }
         }
@@ -569,8 +608,18 @@ class ServerHub(
         return integrator.totals[today]
     }
 
+    /** One warning per battery whose idle self-discharge is unusually high, for the dashboard. */
+    private fun selfDischargeAlerts(batteries: Collection<BatteryState>, nowMs: Long): List<AlertDto> =
+        batteries.mapNotNull { b ->
+            val w = selfDischargePowerW(b.id) ?: return@mapNotNull null
+            if (w <= SELF_DISCHARGE_ALERT_W) return@mapNotNull null
+            AlertDto("selfdis-${b.id}", "WARN", "Hohe Eigenentladung",
+                "${b.name}: ~$w W Eigenentladung im Leerlauf (heute ${(idleSelfWhToday[b.id] ?: 0.0).roundToInt()} Wh) – bitte beobachten.", nowMs)
+        }
+
     private fun rebuild(nowMs: Long) {
         val batteries = lastBatteries.values.sortedBy { it.name }
+        val nowDay = LocalDate.now(zone).toString()
         val group = GroupState(batteries)
         val meter = lastMeter
         val acW = (group.outputW * config.system.inverterEfficiency).roundToInt()
@@ -606,16 +655,22 @@ class ServerHub(
             ),
             meter = meter?.let { MeterDto(it.phaseW, it.totalW) },
             batteries = batteries.map {
+                val dd = deviceDays.firstOrNull { d -> d.batteryId == it.id && d.date == nowDay }
+                val delivered = dd?.let { d -> if (d.deliveredWh > 0 || d.outputWh == 0) d.deliveredWh else d.outputWh }
+                val selfW = selfDischargePowerW(it.id)
                 BatteryDto(
                     id = it.id, name = it.name, socPercent = it.socPercent, capacityWh = it.capacityWh,
                     pvInputW = it.pvInputW, outputW = it.outputW, outputEnabled = it.outputEnabled,
                     dodPercent = it.dodPercent, chargeMode = it.chargeMode.name, adaptiveMode = it.adaptiveMode,
-                    dailyPvWh = it.dailyPvWh, dailyOutputWh = it.dailyOutputWh, temperatureC = it.temperatureC,
+                    dailyPvWh = it.dailyPvWh, dailyOutputWh = it.dailyOutputWh,
+                    deliveredTodayWh = delivered, selfDischargeTodayWh = dd?.selfDischargeWh, selfDischargeW = selfW,
+                    selfDischargeHigh = selfW != null && selfW > SELF_DISCHARGE_ALERT_W,
+                    temperatureC = it.temperatureC,
                     firmware = it.firmware, ageSeconds = ((nowMs - it.timestampMs) / 1000).coerceAtLeast(0),
                 )
             },
             today = today()?.let { EnergyDto.from(it, config.tariff) },
-            alerts = alerts.map { AlertDto.from(it) },
+            alerts = alerts.map { AlertDto.from(it) } + selfDischargeAlerts(batteries, nowMs),
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
             lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
@@ -646,5 +701,7 @@ class ServerHub(
         const val METER_QUALITY_WINDOW = 120
         const val CT_STALE_RECONNECT_MS = 180_000L   // reconnect if the CT002 is silent this long while batteries report
         const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
+        const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
+        const val SELF_DISCHARGE_ALERT_W = 25.0       // flag a battery whose idle self-discharge exceeds this (W, 24h avg)
     }
 }

@@ -61,7 +61,15 @@ data class BatteryDto(
     val chargeMode: String,
     val adaptiveMode: Boolean?,
     val dailyPvWh: Int?,
+    /** Device daily output counter `bs` (includes self-discharge) — kept for reference. */
     val dailyOutputWh: Int?,
+    /** Real energy delivered to the inverter today (integrated live output). */
+    val deliveredTodayWh: Int? = null,
+    /** Energy lost to self-discharge today, and the recent idle self-discharge power (W). */
+    val selfDischargeTodayWh: Int? = null,
+    val selfDischargeW: Int? = null,
+    /** True when the recent idle self-discharge is unusually high. */
+    val selfDischargeHigh: Boolean = false,
     val temperatureC: Int?,
     val firmware: String?,
     val ageSeconds: Long,
@@ -172,6 +180,7 @@ data class BatterySeriesDto(
     val discharge: List<Int>,
     val pv: List<Int>,
     val output: List<Int>,
+    val selfDischarge: List<Int> = emptyList(),
     /** State of charge per bucket in %, -1 where no data (only filled for the 5-minute day view). */
     val soc: List<Int> = emptyList(),
 )

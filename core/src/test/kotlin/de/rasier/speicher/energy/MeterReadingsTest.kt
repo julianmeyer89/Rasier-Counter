@@ -37,6 +37,24 @@ class MeterReadingsTest {
     }
 
     @Test
+    fun `delivered output is used over the bs counter so self-discharge is not counted`() {
+        val entries = listOf(
+            MeterEntry(at("2026-11-01", 10), importKwh = 0.0),
+            MeterEntry(at("2026-11-03", 10), importKwh = 10.0),
+        )
+        var days = emptyList<DeviceDay>()
+        // Device counter bs claims 1000 Wh output, but only 200 Wh was really delivered; 800 Wh was self-discharge.
+        days = MeterEvaluation.updateDeviceDays(days, "B1", at("2026-11-02", 22), pvWh = 500, outputWh = 1000, zone = zone)
+        days = MeterEvaluation.addBatteryEnergy(days, "B1", at("2026-11-02", 22), 0, 0, deliveredWh = 200, selfDischargeWh = 800, zone = zone)
+        val dd = days.single()
+        assertEquals(1000, dd.outputWh)       // raw device counter kept
+        assertEquals(200, dd.deliveredWh)
+        assertEquals(800, dd.selfDischargeWh)
+        val p = MeterEvaluation.periods(entries, days, efficiency = 1.0, zone = zone).single()
+        assertEquals(0.2, p.batteryOutputKwh!!, 1e-9)   // uses delivered (200 Wh), not the 1000 Wh bs counter
+    }
+
+    @Test
     fun `without battery data only grid values are shown`() {
         val entries = listOf(MeterEntry(at("2026-11-01", 10), 100.0), MeterEntry(at("2026-11-04", 10), 115.5))
         val p = MeterEvaluation.periods(entries, emptyList(), 0.95, zone).single()

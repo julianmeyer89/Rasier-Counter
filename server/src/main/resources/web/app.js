@@ -167,8 +167,9 @@ function renderBatteries(s) {
       ${row("Entladetiefe (DoD)", b.dodPercent != null ? b.dodPercent + " % (Mindestladestand " + (100 - b.dodPercent) + " %)" : "–")}
       ${row("Lademodus", chargeModeLabel(b.chargeMode))}
       ${row("Adaptiver Modus", b.adaptiveMode == null ? "–" : b.adaptiveMode ? "an" : "aus")}
-      ${b.dailyOutputWh != null ? row("Abgabe heute", KWH(b.dailyOutputWh), "battery") : ""}
+      ${(b.deliveredTodayWh ?? b.dailyOutputWh) != null ? row("Abgabe heute", KWH(b.deliveredTodayWh ?? b.dailyOutputWh), "battery") : ""}
       ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh), "solar") : ""}
+      ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}
       ${row("Firmware", b.firmware || "–")}
       ${row("Aktualisiert", ago(Date.now() - b.ageSeconds * 1000))}
@@ -220,6 +221,7 @@ const BAT_METRICS = [
   { key: "discharge", label: "Entladung", field: "discharge" },
   { key: "pv", label: "PV", field: "pv" },
   { key: "output", label: "Abgabe", field: "output" },
+  { key: "self", label: "Eigenentladung", field: "selfDischarge" },
 ];
 // Distinct hues, assigned per visible series in order (like the statistics chart).
 const BAT_PALETTE = ["#1565c0", "#ef6c00", "#2e7d32", "#c62828", "#6a1b9a", "#00838f", "#f9a825", "#ad1457"];

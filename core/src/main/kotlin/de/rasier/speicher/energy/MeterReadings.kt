@@ -30,6 +30,11 @@ data class DeviceDay(
     /** Integrated energy into/out of the battery cells (net PV-minus-output), for per-battery charts. */
     val chargeWh: Int = 0,
     val dischargeWh: Int = 0,
+    /** Energy actually delivered to the inverter (integral of the live output power g1/g2). The device
+     *  counter `bs`/[outputWh] also counts self-discharge, so this is the real delivered output. */
+    val deliveredWh: Int = 0,
+    /** Energy lost to self-discharge: SOC fell while the battery was idle (no output, no PV). */
+    val selfDischargeWh: Int = 0,
 )
 
 /** Evaluation of the period between two meter readings. Energy in kWh. */
@@ -83,26 +88,32 @@ object MeterEvaluation {
             lastSeenMs = timestampMs,
             chargeWh = existing?.chargeWh ?: 0,
             dischargeWh = existing?.dischargeWh ?: 0,
+            deliveredWh = existing?.deliveredWh ?: 0,
+            selfDischargeWh = existing?.selfDischargeWh ?: 0,
         )
         return days.filterNot { it.date == date && it.batteryId == batteryId } + updated
     }
 
-    /** Adds integrated charge/discharge energy (Wh) to a battery's day, creating the entry if needed. */
+    /** Adds integrated per-battery energy (Wh) to a battery's day, creating the entry if needed. */
     fun addBatteryEnergy(
         days: List<DeviceDay>,
         batteryId: String,
         timestampMs: Long,
         chargeWh: Int,
         dischargeWh: Int,
+        deliveredWh: Int,
+        selfDischargeWh: Int,
         zone: ZoneId,
     ): List<DeviceDay> {
-        if (chargeWh == 0 && dischargeWh == 0) return days
+        if (chargeWh == 0 && dischargeWh == 0 && deliveredWh == 0 && selfDischargeWh == 0) return days
         val date = Instant.ofEpochMilli(timestampMs).atZone(zone).toLocalDate().toString()
         val existing = days.firstOrNull { it.date == date && it.batteryId == batteryId }
         val updated = (existing ?: DeviceDay(date = date, batteryId = batteryId)).let {
             it.copy(
                 chargeWh = it.chargeWh + chargeWh,
                 dischargeWh = it.dischargeWh + dischargeWh,
+                deliveredWh = it.deliveredWh + deliveredWh,
+                selfDischargeWh = it.selfDischargeWh + selfDischargeWh,
                 lastSeenMs = timestampMs,
             )
         }
@@ -135,7 +146,10 @@ object MeterEvaluation {
                 toMs = b.timestampMs,
                 importKwh = import,
                 exportKwh = export,
-                batteryOutputKwh = if (coveredDays > 0) inPeriod.sumOf { it.outputWh } / 1000.0 else null,
+                // Real delivered energy (live output), not the device counter `bs` which also counts
+                // self-discharge. Fall back to the device counter only for old days recorded before
+                // deliveredWh existed (deliveredWh == 0 but outputWh > 0).
+                batteryOutputKwh = if (coveredDays > 0) inPeriod.sumOf { if (it.deliveredWh > 0 || it.outputWh == 0) it.deliveredWh else it.outputWh } / 1000.0 else null,
                 pvKwh = if (coveredDays > 0) inPeriod.sumOf { it.pvWh } / 1000.0 else null,
                 batteryDaysCovered = coveredDays,
                 days = (b.timestampMs - a.timestampMs) / 86_400_000.0,
