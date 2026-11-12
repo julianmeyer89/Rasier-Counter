@@ -265,35 +265,34 @@ class ServerHub(
 
     private fun batteryName(id: String) = lastBatteries[id]?.name ?: id.takeLast(6)
 
-    /** Daily (or monthly) per-battery energy from the stored device day counters. */
+    /** Daily (or monthly) per-battery energy (Wh) from the stored device day counters. */
     private fun batteryDaily(from: LocalDate, to: LocalDate, monthly: Boolean): BatteryStatsDto {
         val fromS = from.toString(); val toS = to.toString()
         val recent = deviceDays.filter { it.date in fromS..toS }
         val keyOf: (DeviceDay) -> String = { if (monthly) it.date.substring(0, 7) else it.date }
         val keys = recent.map(keyOf).distinct().sorted()
         val labels = keys.map { if (monthly) it.substring(5) + "." + it.substring(0, 4) else it.substring(8, 10) + "." + it.substring(5, 7) + "." }
+        fun deliveredOf(d: DeviceDay) = if (d.deliveredWh > 0 || d.outputWh == 0) d.deliveredWh else d.outputWh
         val series = link.batteryIds.mapNotNull { id ->
             val byKey = recent.filter { it.batteryId == id }.groupBy(keyOf)
             if (byKey.isEmpty()) return@mapNotNull null
+            val pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 }
+            val output = keys.map { k -> byKey[k]?.sumOf { deliveredOf(it) } ?: 0 }
+            val charge = keys.map { k -> byKey[k]?.sumOf { it.chargeWh } ?: 0 }
+            val self = keys.map { k -> byKey[k]?.sumOf { it.selfDischargeWh } ?: 0 }
             BatterySeriesDto(
-                id = id, name = batteryName(id),
-                charge = keys.map { k -> byKey[k]?.sumOf { it.chargeWh } ?: 0 },
-                discharge = keys.map { k -> byKey[k]?.sumOf { it.dischargeWh } ?: 0 },
-                pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 },
-                // Real delivered output; fall back to the device counter for days before deliveredWh existed.
-                output = keys.map { k -> byKey[k]?.sumOf { if (it.deliveredWh > 0 || it.outputWh == 0) it.deliveredWh else it.outputWh } ?: 0 },
-                selfDischarge = keys.map { k -> byKey[k]?.sumOf { it.selfDischargeWh } ?: 0 },
+                id = id, name = batteryName(id), pv = pv, output = output, charge = charge, selfDischarge = self,
                 soc = keys.map { -1 },
+                totals = BatteryTotals(pv.sum(), output.sum(), charge.sum(), self.sum()),
             )
         }
-        return BatteryStatsDto(if (monthly) Bucket.MONTH.name else Bucket.DAY.name, labels, series)
+        return BatteryStatsDto(if (monthly) Bucket.MONTH.name else Bucket.DAY.name, "Wh", labels, series)
     }
 
     /**
-     * 5-minute per-battery data of one day from the power history. Charge/discharge come from the
-     * state-of-charge changes (times the battery capacity), which the history has reliably, so a day's
-     * charging shows even when per-battery power history is sparse. PV/output come from the per-battery
-     * power history (may be empty for older points). [soc] is the average state of charge per slot.
+     * 5-minute per-battery data of one day from the power history. Chart values are AVERAGE POWER (W)
+     * per slot; [totals] are the day's energy (Wh). PV/output/charge come from the per-battery power
+     * history; self-discharge from the SOC drop while idle; [soc] is the average state of charge.
      */
     private fun batteryFiveMinute(day: LocalDate): BatteryStatsDto {
         val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
@@ -301,11 +300,12 @@ class ServerHub(
         val ids = link.batteryIds
         val caps = ids.map { lastBatteries[it]?.capacityWh ?: 0 }
         val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
-        val charge = Array(ids.size) { DoubleArray(slots) }
-        val discharge = Array(ids.size) { DoubleArray(slots) }
-        val pv = Array(ids.size) { DoubleArray(slots) }
-        val output = Array(ids.size) { DoubleArray(slots) }
-        val selfDis = Array(ids.size) { DoubleArray(slots) }
+        // Energy (Wh) per slot, plus covered hours per slot, so power = energy / coveredHours.
+        val pvE = Array(ids.size) { DoubleArray(slots) }
+        val outE = Array(ids.size) { DoubleArray(slots) }
+        val chgE = Array(ids.size) { DoubleArray(slots) }
+        val selfE = Array(ids.size) { DoubleArray(slots) }
+        val cov = Array(ids.size) { DoubleArray(slots) }
         val socSum = Array(ids.size) { DoubleArray(slots) }
         val socCnt = Array(ids.size) { IntArray(slots) }
         for (p in points) {
@@ -322,41 +322,35 @@ class ServerHub(
             val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
             val hours = dt / 3_600_000.0
             for (idx in ids.indices) {
-                // Charge/discharge from the SOC change times capacity (robust, always in the history).
+                val apv = a.batPvW.getOrNull(idx) ?: continue
+                val bpv = b.batPvW.getOrNull(idx) ?: continue
+                val aout = a.batOutW.getOrNull(idx) ?: 0; val bout = b.batOutW.getOrNull(idx) ?: 0
+                cov[idx][slot] += hours
+                pvE[idx][slot] += (apv + bpv) / 2.0 * hours
+                outE[idx][slot] += (aout + bout) / 2.0 * hours
+                chgE[idx][slot] += (maxOf(apv - aout, 0) + maxOf(bpv - bout, 0)) / 2.0 * hours
                 val sa = a.soc.getOrNull(idx); val sb = b.soc.getOrNull(idx)
-                if (sa != null && sb != null && caps[idx] > 0) {
-                    val dE = (sb - sa) / 100.0 * caps[idx]
-                    if (dE >= 0) charge[idx][slot] += dE else discharge[idx][slot] += -dE
-                }
-                // PV/output from per-battery power history, if present.
-                val apv = a.batPvW.getOrNull(idx); val bpv = b.batPvW.getOrNull(idx)
-                if (apv != null && bpv != null) {
-                    pv[idx][slot] += (apv + bpv) / 2.0 * hours
-                    val aout = a.batOutW.getOrNull(idx) ?: 0; val bout = b.batOutW.getOrNull(idx) ?: 0
-                    output[idx][slot] += (aout + bout) / 2.0 * hours
-                    // Self-discharge: SOC fell while idle (no output, no PV) -> energy lost, not delivered.
-                    if (sa != null && sb != null && sb < sa && caps[idx] > 0 &&
-                        aout <= IDLE_W && bout <= IDLE_W && apv <= IDLE_W && bpv <= IDLE_W) {
-                        selfDis[idx][slot] += (sa - sb) / 100.0 * caps[idx]
-                    }
+                if (sa != null && sb != null && sb < sa && caps[idx] > 0 &&
+                    aout <= IDLE_W && bout <= IDLE_W && apv <= IDLE_W && bpv <= IDLE_W) {
+                    selfE[idx][slot] += (sa - sb) / 100.0 * caps[idx]
                 }
             }
         }
         val labels = (0 until slots).map {
             val m = (it * slotMs / 60_000L).toInt(); "%02d:%02d".format(m / 60, m % 60)
         }
+        fun power(e: Array<DoubleArray>, idx: Int) = (0 until slots).map { s -> if (cov[idx][s] > 0) (e[idx][s] / cov[idx][s]).roundToInt() else 0 }
         val series = ids.mapIndexed { idx, id ->
             BatterySeriesDto(
                 id = id, name = batteryName(id),
-                charge = charge[idx].map { it.roundToInt() },
-                discharge = discharge[idx].map { it.roundToInt() },
-                pv = pv[idx].map { it.roundToInt() },
-                output = output[idx].map { it.roundToInt() },
-                selfDischarge = selfDis[idx].map { it.roundToInt() },
+                pv = power(pvE, idx), output = power(outE, idx), charge = power(chgE, idx), selfDischarge = power(selfE, idx),
                 soc = (0 until slots).map { if (socCnt[idx][it] > 0) (socSum[idx][it] / socCnt[idx][it]).roundToInt() else -1 },
+                totals = BatteryTotals(
+                    pvE[idx].sum().roundToInt(), outE[idx].sum().roundToInt(), chgE[idx].sum().roundToInt(), selfE[idx].sum().roundToInt(),
+                ),
             )
         }
-        return BatteryStatsDto(Bucket.FIVE_MIN.name, labels, series)
+        return BatteryStatsDto(Bucket.FIVE_MIN.name, "W", labels, series)
     }
 
     enum class Bucket { FIVE_MIN, HOUR, DAY, MONTH }

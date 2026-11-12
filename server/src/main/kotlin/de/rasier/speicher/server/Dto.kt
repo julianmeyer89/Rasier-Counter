@@ -169,22 +169,29 @@ data class SettingsDto(
     val calibrationIntervalDays: Int,
 )
 
-/** Per-battery statistics. All value lists are aligned to [labels]; energy in Wh. */
+/**
+ * Per-battery statistics. Value lists are aligned to [labels]. [unit] says what the chart values are:
+ * "W" (average power per 5-minute slot, day view) or "Wh" (energy per day/month bucket). [totals] is
+ * always energy in Wh (for the sum box). [soc] is in %, -1 where no data (day view only).
+ */
 @Serializable
-data class BatteryStatsDto(val bucket: String, val labels: List<String>, val series: List<BatterySeriesDto>)
+data class BatteryStatsDto(val bucket: String, val unit: String, val labels: List<String>, val series: List<BatterySeriesDto>)
 
 @Serializable
 data class BatterySeriesDto(
     val id: String,
     val name: String,
-    val charge: List<Int>,
-    val discharge: List<Int>,
     val pv: List<Int>,
     val output: List<Int>,
-    val selfDischarge: List<Int> = emptyList(),
-    /** State of charge per bucket in %, -1 where no data (only filled for the 5-minute day view). */
+    val charge: List<Int>,
+    val selfDischarge: List<Int>,
     val soc: List<Int> = emptyList(),
+    val totals: BatteryTotals = BatteryTotals(),
 )
+
+/** Window energy totals per metric, in Wh, for the sum box. */
+@Serializable
+data class BatteryTotals(val pv: Int = 0, val output: Int = 0, val charge: Int = 0, val selfDischarge: Int = 0)
 
 @Serializable
 data class EventDto(val t: Long, val text: String)

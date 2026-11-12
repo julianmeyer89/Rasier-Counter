@@ -194,7 +194,7 @@ function renderBatteries(s) {
     .map(([m, l]) => `<button class="sec ${batView.mode === m ? "on" : ""}" onclick="setBatMode('${m}')">${l}</button>`).join("");
   html += `<div class="card"><div class="chips">${modeBtns}</div>
     <div class="navrow"><button class="ghost" onclick="batNav(-1)">◀</button><b id="batLabel"></b><button class="ghost" onclick="batNav(1)">▶</button></div></div>
-    <div class="card"><h2>Lade-/Entladekurven je Speicher</h2>
+    <div class="card"><h2>Speicher-Verlauf</h2>
     <div style="margin-bottom:8px">
       <button class="sec ${batChartMode === "bar" ? "on" : ""}" onclick="setBatChartMode('bar')">Balken</button>
       <button class="sec ${batChartMode === "line" ? "on" : ""}" onclick="setBatChartMode('line')">Linie</button></div>
@@ -203,36 +203,28 @@ function renderBatteries(s) {
     <canvas id="batChart"></canvas>
     <input type="range" id="batSlider" min="0" max="0" value="0" oninput="onBatSlider(this.value)" style="width:100%">
     <div id="batReadout" class="readout"></div>
-    <div class="note">Ladung/Entladung = Energie in bzw. aus dem Speicher. Tag: 5‑Minuten-Auflösung, sonst je Tag bzw. Monat. Kategorien antippen zum Ein-/Ausblenden.</div></div>
-    <div class="card"><h2>Ladestandverlauf</h2>
-    <div class="navrow"><button class="ghost" onclick="socNav(-1)">◀</button><b id="socLabel"></b><button class="ghost" onclick="socNav(1)">▶</button></div>
-    <canvas id="socChart"></canvas>
-    <input type="range" id="socSlider" min="0" max="0" value="0" oninput="onSocSlider(this.value)" style="width:100%">
-    <div id="socReadout" class="readout"></div>
-    <div class="note">Ladestand (%) je Speicher über den Tag. Die Y-Achse passt sich automatisch an den Wertebereich an.</div></div>`;
+    <div class="note">Tag: Leistung (W, 5‑Minuten). Woche/Monat/Jahr: Energie (kWh). Ladestand liegt auf der rechten Achse (%). Kategorien antippen zum Ein-/Ausblenden.</div></div>
+    <div class="card"><h2>Summe</h2><div id="batSum"></div><div class="note" id="batSumNote"></div></div>`;
   document.getElementById("batteries").innerHTML = html;
   loadBatteryStats();
-  loadSoc();
 }
 
-// ---- per-battery charge/discharge chart (mirrors the statistics chart) ----
+// ---- per-battery chart: PV / Ausgang / Ladung / Eigenentladung (left axis) + Ladestand (right axis) ----
 const BAT_METRICS = [
+  { key: "pv", label: "PV-Eingang", field: "pv" },
+  { key: "output", label: "Speicher-Ausgang", field: "output" },
   { key: "charge", label: "Ladung", field: "charge" },
-  { key: "discharge", label: "Entladung", field: "discharge" },
-  { key: "pv", label: "PV", field: "pv" },
-  { key: "output", label: "Abgabe", field: "output" },
   { key: "self", label: "Eigenentladung", field: "selfDischarge" },
 ];
-// Distinct hues, assigned per visible series in order (like the statistics chart).
+// Distinct hues, assigned per visible series in order.
 const BAT_PALETTE = ["#1565c0", "#ef6c00", "#2e7d32", "#c62828", "#6a1b9a", "#00838f", "#f9a825", "#ad1457"];
-let batView = { mode: localStorage.getItem("batMode") || "week", anchor: new Date() };
-// Default to metrics that already have history ("Abgabe") plus the new "Entladung"; a fresh key
-// so earlier visitors get the better default instead of the old all-empty charge/discharge pair.
-let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetricsV3") || '["charge","discharge","output"]'));
+const SOC_COLORS = ["#8e24aa", "#5e35b1", "#00838f"];
+let batView = { mode: localStorage.getItem("batMode") || "day", anchor: new Date() };
+let batMetrics = new Set(JSON.parse(localStorage.getItem("batMetricsV4") || '["pv","output","charge","self"]'));
+let batSoc = (localStorage.getItem("batSoc") ?? "1") === "1";
 let batHidden = new Set(JSON.parse(localStorage.getItem("batHidden") || "[]"));
-let batChartMode = localStorage.getItem("batChartMode") || "bar";
+let batChartMode = localStorage.getItem("batChartMode") || "line";
 let batData = null, batKey = "", batSelected = null;
-let socAnchor = new Date(), socData = null, socKey = "", socSel = null;
 
 function computeBatWindow() {
   const a = batView.anchor;
@@ -253,45 +245,14 @@ function batNav(d) {
 function setBatChartMode(m) { batChartMode = m; localStorage.setItem("batChartMode", m); renderBatteries(lastState); }
 function toggleBatMetric(k) {
   if (batMetrics.has(k)) batMetrics.delete(k); else batMetrics.add(k);
-  localStorage.setItem("batMetricsV3", JSON.stringify([...batMetrics])); drawBatteryChart();
+  localStorage.setItem("batMetricsV4", JSON.stringify([...batMetrics])); drawBatteryChart();
 }
+function toggleBatSoc() { batSoc = !batSoc; localStorage.setItem("batSoc", batSoc ? "1" : "0"); drawBatteryChart(); }
 function toggleBat(id) {
   if (batHidden.has(id)) batHidden.delete(id); else batHidden.add(id);
-  localStorage.setItem("batHidden", JSON.stringify([...batHidden])); drawBatteryChart(); drawSoc();
+  localStorage.setItem("batHidden", JSON.stringify([...batHidden])); drawBatteryChart();
 }
 function onBatSlider(v) { batSelected = +v; drawBatteryChart(); }
-function onSocSlider(v) { socSel = +v; drawSoc(); }
-function socNav(x) { socAnchor.setDate(socAnchor.getDate() + x); socAnchor = new Date(socAnchor); socSel = null; loadSoc(true); }
-async function loadSoc(force) {
-  const d = fmt(socAnchor);
-  const lbl = document.getElementById("socLabel");
-  if (lbl) lbl.textContent = socAnchor.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
-  try {
-    if (force || !socData || socKey !== d) { socData = await api(`batterystats?bucket=5min&from=${d}&to=${d}`); socKey = d; }
-    drawSoc();
-  } catch (e) { /* ignore */ }
-}
-function drawSoc() {
-  const canvas = document.getElementById("socChart"); if (!canvas) return;
-  const labels = socData?.labels || [];
-  const bats = (socData?.series || []).filter(b => !batHidden.has(b.id));
-  const series = bats.map((b, i) => ({ color: BAT_PALETTE[i % BAT_PALETTE.length], name: b.name, soc: b.soc || [] }));
-  const slider = document.getElementById("socSlider"), ro = document.getElementById("socReadout");
-  const hasData = series.some(s => s.soc.some(v => v >= 0));
-  if (!labels.length || !hasData) {
-    if (slider) slider.max = 0;
-    if (ro) ro.innerHTML = `<div class="note">Für diesen Tag liegt noch kein Ladestandverlauf vor.</div>`;
-    lineChart(canvas, [], {}); return;
-  }
-  if (socSel == null || socSel > labels.length - 1) socSel = labels.length - 1;
-  if (slider) { slider.max = labels.length - 1; slider.value = socSel; }
-  lineChart(canvas, series.map(s => ({ color: s.color, points: labels.map((_, i) => [i, s.soc[i]]).filter(p => p[1] >= 0) })),
-    { unit: "%", selected: socSel, xTicks: timeTicks(labels) });
-  ro.innerHTML = `<div class="ro-h">${labels[socSel]}</div>` + series.map(s => {
-    const vv = s.soc[socSel];
-    return `<span class="ro" style="color:${s.color}"><span class="dot" style="background:${s.color};border-color:${s.color}"></span>${s.name}: <b style="color:${s.color}">${vv >= 0 ? vv + " %" : "–"}</b></span>`;
-  }).join("");
-}
 async function loadBatteryStats(force) {
   const w = computeBatWindow();
   const lbl = document.getElementById("batLabel"); if (lbl) lbl.textContent = w.label;
@@ -304,47 +265,67 @@ async function loadBatteryStats(force) {
     drawBatteryChart();
   } catch (e) { /* ignore */ }
 }
-function batSeriesList() {
-  const out = [];
-  (batData?.series || []).filter(b => !batHidden.has(b.id)).forEach(b => BAT_METRICS.forEach(m => {
-    if (batMetrics.has(m.key)) out.push({ label: `${b.name} ${m.label}`, values: b[m.field] || [] });
-  }));
-  out.forEach((s, i) => s.color = BAT_PALETTE[i % BAT_PALETTE.length]);
-  return out;
-}
 function renderBatChips() {
   const mbox = document.getElementById("batChips");
-  if (mbox) mbox.innerHTML = BAT_METRICS.map(m => {
-    const on = batMetrics.has(m.key);
-    return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBatMetric('${m.key}')">${m.label}</button>`;
-  }).join("");
+  if (mbox) {
+    let h = BAT_METRICS.map(m => {
+      const on = batMetrics.has(m.key);
+      return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBatMetric('${m.key}')">${m.label}</button>`;
+    }).join("");
+    h += `<button class="chip ${batSoc ? "on" : ""}" style="${batSoc ? "--c:#8e24aa" : ""}" onclick="toggleBatSoc()">Ladestand</button>`;
+    mbox.innerHTML = h;
+  }
   const wbox = document.getElementById("batWho"), bats = batData?.series || [];
   if (wbox) wbox.innerHTML = bats.length <= 1 ? "" : bats.map(b => {
     const on = !batHidden.has(b.id);
     return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBat('${b.id}')">${b.name}</button>`;
   }).join("");
 }
+function renderBatSum(vis) {
+  const box = document.getElementById("batSum"); if (!box) return;
+  const rows = [["pv", "PV-Eingang", "solar"], ["output", "Speicher-Ausgang", "battery"], ["charge", "Ladung", "import"], ["selfDischarge", "Eigenentladung", ""]];
+  box.innerHTML = vis.length
+    ? rows.map(([f, lbl, cls]) => row(lbl, KWH(vis.reduce((a, b) => a + ((b.totals && b.totals[f]) || 0), 0)), cls)).join("")
+    : `<div class="note">Keine Daten.</div>`;
+  const note = document.getElementById("batSumNote");
+  if (note) note.textContent = "Zeitraum: " + computeBatWindow().label + " · Energie in kWh";
+}
 function drawBatteryChart() {
   const canvas = document.getElementById("batChart"); if (!canvas) return;
   renderBatChips();
   const labels = batData?.labels || [];
-  const series = batSeriesList();
+  const vis = (batData?.series || []).filter(b => !batHidden.has(b.id));
+  const isPower = batData?.unit === "W";
+  const leftUnit = isPower ? "W" : "kWh";
+  const scale = (v) => isPower ? v : (v || 0) / 1000;
+  renderBatSum(vis);
+  const left = [];
+  vis.forEach(b => BAT_METRICS.forEach(m => { if (batMetrics.has(m.key)) left.push({ label: `${b.name} ${m.label}`, values: b[m.field] || [] }); }));
+  left.forEach((s, i) => s.color = BAT_PALETTE[i % BAT_PALETTE.length]);
+  const socSeries = batSoc ? vis.map((b, i) => ({ name: b.name, color: SOC_COLORS[i % SOC_COLORS.length],
+    points: labels.map((_, j) => [j, (b.soc || [])[j]]).filter(p => p[1] != null && p[1] >= 0) })).filter(s => s.points.length) : [];
   const slider = document.getElementById("batSlider"), ro = document.getElementById("batReadout");
-  if (!labels.length || !series.length) {
+  if (!labels.length || (!left.length && !socSeries.length)) {
     if (slider) slider.max = 0;
     if (ro) ro.innerHTML = `<div class="note">Für diesen Zeitraum liegen noch keine Speicherdaten vor.</div>`;
     barChart(canvas, [], {}); return;
   }
   if (batSelected == null || batSelected > labels.length - 1) batSelected = labels.length - 1;
   if (slider) { slider.max = labels.length - 1; slider.value = batSelected; }
+  const xTicks = /^\d\d:\d\d$/.test(labels[0]) ? timeTicks(labels) : xTicksFor(labels);
+  const right = socSeries.length ? { series: socSeries.map(s => ({ color: s.color, points: s.points, dash: true })), unit: "%" } : null;
   if (batChartMode === "line") {
-    lineChart(canvas, series.map(s => ({ color: s.color, points: labels.map((_, i) => [i, (s.values[i] || 0) / 1000]) })),
-      { unit: "kWh", selected: batSelected, xTicks: /^\d\d:\d\d$/.test(labels[0]) ? timeTicks(labels) : xTicksFor(labels) });
+    lineChart(canvas, left.map(s => ({ color: s.color, points: labels.map((_, i) => [i, scale(s.values[i])]) })),
+      { unit: leftUnit, selected: batSelected, xTicks, right });
   } else {
-    barChart(canvas, labels.map((_, i) => series.map(s => [s.color, (s.values[i] || 0) / 1000])), { unit: "kWh", labels, selected: batSelected });
+    barChart(canvas, labels.map((_, i) => left.map(s => [s.color, scale(s.values[i])])), { unit: leftUnit, labels, selected: batSelected, right });
   }
-  ro.innerHTML = `<div class="ro-h">${labels[batSelected]}</div>` + series.map(s =>
-    `<span class="ro" style="color:${s.color}"><span class="dot" style="background:${s.color};border-color:${s.color}"></span>${s.label}: <b style="color:${s.color}">${KWH(s.values[batSelected] || 0)}</b></span>`).join("");
+  const fmtVal = (v) => isPower ? (Math.round(v || 0) + " W") : KWH(v || 0);
+  let html = `<div class="ro-h">${labels[batSelected]}</div>`;
+  html += left.map(s => `<span class="ro" style="color:${s.color}"><span class="dot" style="background:${s.color};border-color:${s.color}"></span>${s.label}: <b style="color:${s.color}">${fmtVal(s.values[batSelected])}</b></span>`).join("");
+  html += socSeries.map(s => { const p = s.points.find(x => x[0] === batSelected); const vv = p ? p[1] : null;
+    return `<span class="ro" style="color:${s.color}"><span class="dot" style="background:${s.color};border-color:${s.color}"></span>${s.name} Ladestand: <b style="color:${s.color}">${vv != null ? vv + " %" : "–"}</b></span>`; }).join("");
+  ro.innerHTML = html;
 }
 
 async function sendCmd(batteryId, type, value) {
@@ -687,39 +668,62 @@ function drawXLabels(ctx, g, ticks) {
   for (const t of ticks) ctx.fillText(t.label, t.px, g.B + 3);
 }
 
-// series: [{color, points:[[x,y]]}]; opts: {zero, unit, xTicks:[{x,label}], selected (x value)}
+function autoRange(values) {
+  let min = Math.min(...values), max = Math.max(...values);
+  if (!isFinite(min)) { min = 0; max = 1; }
+  if (max - min < 0.001) max = min + 1;
+  return { min, max };
+}
+function drawYAxisRight(ctx, g, min, max, Yr, unit) {
+  const muted = getComputedStyle(document.body).getPropertyValue("--muted") || "#888";
+  ctx.font = "10px system-ui"; ctx.fillStyle = muted; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  for (const tv of axisTicks(min, max)) ctx.fillText(axisFmt(tv), g.R + 4, Yr(tv));
+  if (unit) { ctx.textAlign = "right"; ctx.textBaseline = "top"; ctx.fillText(unit, g.w - 2, 0); }
+}
+function drawPolyline(ctx, pts, Xf, Yf, color, dash) {
+  if (pts.length === 1) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(Xf(pts[0][0]), Yf(pts[0][1]), 3, 0, 7); ctx.fill(); return; }
+  if (pts.length < 2) return;
+  ctx.strokeStyle = color; ctx.lineWidth = 2; if (dash) ctx.setLineDash([5, 3]);
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(Xf(p[0]), Yf(p[1])) : ctx.moveTo(Xf(p[0]), Yf(p[1]))); ctx.stroke();
+  ctx.setLineDash([]);
+}
+// series: [{color, points:[[x,y]]}]; opts: {zero, unit, xTicks:[{x,label}], selected, right:{series,unit}}
 function lineChart(canvas, series, opts = {}) {
-  const { zero = false, unit = "", xTicks = null, selected = null } = opts;
+  const { zero = false, unit = "", xTicks = null, selected = null, right = null } = opts;
   const g = chartSetup(canvas); const { ctx } = g;
-  const all = series.flatMap(s => s.points);
-  if (!all.length) return;
-  const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
-  let minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-  if (zero) { minY = Math.min(minY, 0); maxY = Math.max(maxY, 0); }
-  if (maxY - minY < 0.001) maxY = minY + 1; if (maxX === minX) maxX = minX + 1;
+  const rSeries = ((right && right.series) || []).filter(s => s.points.length);
+  if (rSeries.length) g.R = g.w - 34;
+  const leftAll = series.flatMap(s => s.points);
+  const allX = leftAll.concat(rSeries.flatMap(s => s.points)).map(p => p[0]);
+  if (!allX.length) return;
+  let minX = Math.min(...allX), maxX = Math.max(...allX); if (maxX === minX) maxX = minX + 1;
   const X = (x) => g.L + (x - minX) / (maxX - minX) * (g.R - g.L);
+  let minY = 0, maxY = 1;
+  if (leftAll.length) { const r = autoRange(leftAll.map(p => p[1])); minY = r.min; maxY = r.max; if (zero) { minY = Math.min(minY, 0); maxY = Math.max(maxY, 0); } }
   const Y = (y) => g.B - (y - minY) / (maxY - minY) * (g.B - g.T);
-  drawYAxis(ctx, g, minY, maxY, Y, unit);
-  if (zero) { ctx.strokeStyle = "rgba(128,128,128,.4)"; ctx.beginPath(); ctx.moveTo(g.L, Y(0)); ctx.lineTo(g.R, Y(0)); ctx.stroke(); }
+  if (leftAll.length) drawYAxis(ctx, g, minY, maxY, Y, unit);
+  if (zero && leftAll.length) { ctx.strokeStyle = "rgba(128,128,128,.4)"; ctx.beginPath(); ctx.moveTo(g.L, Y(0)); ctx.lineTo(g.R, Y(0)); ctx.stroke(); }
+  let Yr = null;
+  if (rSeries.length) { const r = autoRange(rSeries.flatMap(s => s.points.map(p => p[1]))); Yr = (y) => g.B - (y - r.min) / (r.max - r.min) * (g.B - g.T); drawYAxisRight(ctx, g, r.min, r.max, Yr, right.unit); }
   if (selected != null) {
     const sx = X(selected); ctx.strokeStyle = "rgba(128,128,128,.6)"; ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(sx, g.T); ctx.lineTo(sx, g.B); ctx.stroke(); ctx.setLineDash([]);
   }
   for (const s of series) {
-    if (s.points.length === 1) { ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(X(s.points[0][0]), Y(s.points[0][1]), 3, 0, 7); ctx.fill(); continue; }
-    if (s.points.length < 2) continue;
-    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
-    s.points.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))); ctx.stroke();
+    drawPolyline(ctx, s.points, X, Y, s.color, false);
     if (selected != null) { const pt = s.points.find(p => p[0] === selected); if (pt) { ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(X(selected), Y(pt[1]), 3.5, 0, 7); ctx.fill(); } }
   }
+  for (const s of rSeries) drawPolyline(ctx, s.points, X, Yr, s.color, true);
   if (xTicks) drawXLabels(ctx, g, xTicks.map(t => ({ px: X(t.x), label: t.label })));
 }
 
-// groups: [[ [color,value] ]]; opts: {unit, labels:[string], selected (group index)}
+// groups: [[ [color,value] ]]; opts: {unit, labels:[string], selected, right:{series,unit}}
 function barChart(canvas, groups, opts = {}) {
-  const { unit = "", labels = null, selected = null } = opts;
+  const { unit = "", labels = null, selected = null, right = null } = opts;
   const g = chartSetup(canvas); const { ctx } = g;
   if (!groups.length) return;
+  const rSeries = ((right && right.series) || []).filter(s => s.points.length);
+  if (rSeries.length) g.R = g.w - 34;
   const max = Math.max(0.001, ...groups.flat().map(b => b[1]));
   const Y = (v) => g.B - v / max * (g.B - g.T);
   drawYAxis(ctx, g, 0, max, Y, unit);
@@ -729,6 +733,13 @@ function barChart(canvas, groups, opts = {}) {
     const bw = gw * 0.8 / Math.max(1, bars.length);
     bars.forEach((b, bi) => { ctx.fillStyle = b[0]; ctx.fillRect(g.L + gi * gw + gw * 0.1 + bi * bw, Y(b[1]), bw * 0.9, g.B - Y(b[1])); });
   });
+  if (rSeries.length) {
+    const r = autoRange(rSeries.flatMap(s => s.points.map(p => p[1])));
+    const Yr = (y) => g.B - (y - r.min) / (r.max - r.min) * (g.B - g.T);
+    const Xc = (i) => g.L + i * gw + gw / 2;
+    drawYAxisRight(ctx, g, r.min, r.max, Yr, right.unit);
+    for (const s of rSeries) drawPolyline(ctx, s.points, Xc, Yr, s.color, true);
+  }
   if (labels) {
     const step = Math.max(1, Math.ceil(groups.length / 7));
     const ticks = labels.map((l, i) => ({ px: g.L + i * gw + gw / 2, label: l, i }))
