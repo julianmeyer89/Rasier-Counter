@@ -21,6 +21,7 @@ import de.rasier.speicher.settings.EventEntry
 import de.rasier.speicher.settings.FileStore
 import de.rasier.speicher.settings.HistoryPoint
 import de.rasier.speicher.settings.toHistoryPoint
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -75,6 +76,8 @@ class ServerHub(
     private var lastBatterySnapshot: SystemSnapshot? = null
     private val chargeRemainder = HashMap<String, Double>()
     private val dischargeRemainder = HashMap<String, Double>()
+    private var ctStaleSinceMs = 0L   // 0 = CT002 healthy; else since when it went silent while batteries report
+    private var lastReconnectMs = 0L
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
 
@@ -99,8 +102,14 @@ class ServerHub(
         if (pollBattery) lastBatteryPollMs = nowMs
         // A CT002 reading counts as "fresh" when its timestamp advanced since the last cycle.
         val meterTs = snapshot.meter?.timestampMs ?: 0L
-        recordMeterFresh(meterTs > lastMeterTimestampMs)
+        val meterFresh = meterTs > lastMeterTimestampMs
+        recordMeterFresh(meterFresh)
         if (meterTs > 0L) lastMeterTimestampMs = meterTs
+        // Self-heal: if the CT002 goes silent while the batteries keep reporting, the CT's cloud
+        // topic has likely rotated and we are subscribed to the old one. Mark since when, so the end
+        // of this method can reconnect (a fresh login re-derives the current topic).
+        if (meterFresh) ctStaleSinceMs = 0L
+        else if (snapshot.batteries.isNotEmpty() && ctStaleSinceMs == 0L) ctStaleSinceMs = nowMs
 
         snapshot.batteries.forEach { lastBatteries[it.id] = it }
         snapshot.meter?.let { lastMeter = it }
@@ -125,6 +134,32 @@ class ServerHub(
         }
         persist(nowMs)
         rebuild(nowMs)
+        recoverMeterIfStuck(nowMs)
+    }
+
+    /**
+     * Reconnects the link when the CT002 has been silent for a while although the batteries still
+     * report. That pattern means the CT's cloud topic rotated and we are on the stale one; a fresh
+     * login (close+connect) re-derives the current topic and re-subscribes. A cooldown avoids thrash.
+     */
+    private suspend fun recoverMeterIfStuck(nowMs: Long) {
+        if (ctStaleSinceMs == 0L || nowMs - ctStaleSinceMs < CT_STALE_RECONNECT_MS) return
+        if (nowMs - lastReconnectMs < RECONNECT_COOLDOWN_MS) return
+        lastReconnectMs = nowMs
+        addEvents(listOf("CT002 seit ${(nowMs - ctStaleSinceMs) / 60_000} min stumm (Speicher ok) – verbinde neu…"), nowMs)
+        runCatching { link.close() }
+        var ok = false
+        for (attempt in 1..3) {
+            ok = runCatching { link.connect() }.onFailure { log("Neuverbindung (Versuch $attempt) fehlgeschlagen: ${it.message}") }.isSuccess
+            if (ok) break
+            delay(3000L)
+        }
+        if (ok) {
+            ctStaleSinceMs = 0L
+            addEvents(listOf("Neu verbunden – CT002-Topic aufgefrischt."), nowMs)
+        } else {
+            addEvents(listOf("Neuverbindung fehlgeschlagen, neuer Versuch nach Cooldown."), nowMs)
+        }
     }
 
     suspend fun manualCommand(command: BatteryCommand): Boolean = mutex.withLock {
@@ -600,5 +635,7 @@ class ServerHub(
         const val SAVE_INTERVAL_MS = 60_000L
         const val DAY_MS = 86_400_000L
         const val METER_QUALITY_WINDOW = 120
+        const val CT_STALE_RECONNECT_MS = 180_000L   // reconnect if the CT002 is silent this long while batteries report
+        const val RECONNECT_COOLDOWN_MS = 300_000L   // minimum gap between self-heal reconnects
     }
 }
