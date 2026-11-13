@@ -370,6 +370,47 @@ class ServerSmallFixesTest {
     }
 
     @Test
+    fun `the per-battery measurement drops the same gaps as the daily total`() = runTest {
+        // recordDeviceDays runs on the very same snapshot as the energy integrator, so it has to use
+        // the same gap limit. It kept a hard-coded 10 minutes, which put a 7-minute gap into the
+        // per-battery measurement but not into the day's total - the same contradiction through the
+        // back door. The statistics test above cannot see this, because it only reads the history.
+        suspend fun measuredAfterGap(gapMs: Long): Int {
+            val dir = Files.createTempDirectory("bgap").toFile()
+            val cfg = demoConfig(dir).copy(demo = false)
+            val hub = ServerHub(cfg, SimDeviceLink(zone), dir, zone)
+            val noon = java.time.LocalDate.now(zone).atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
+            hub.poll(noon)
+            hub.poll(noon + gapMs)
+            return hub.state.value.batteries.first().measuredPvTodayWh ?: -1
+        }
+        val short = measuredAfterGap(2 * 60_000L)
+        val long = measuredAfterGap(7 * 60_000L)
+        assertTrue(short > 0, "ohne Luecke muss gemessen werden (war $short)")
+        assertEquals(0, long, "die 7-Minuten-Luecke wurde in die Speicher-Messung gezaehlt ($long Wh)")
+    }
+
+    @Test
+    fun `a part-day measurement does not replace the device counter`() = runTest {
+        // The day an update is deployed, our measurement starts at that moment while the battery's own
+        // counter already covers the whole day. Preferring the measurement because it merely exists
+        // would drop that day's bar to near zero and keep it there.
+        val dir = Files.createTempDirectory("cover").toFile()
+        val id = SimDeviceLink(zone).batteryIds.first()
+        val full = java.time.LocalDate.now(zone).minusDays(2).toString()
+        val part = java.time.LocalDate.now(zone).minusDays(1).toString()
+        de.rasier.speicher.settings.FileStore(dir).saveDeviceDays(listOf(
+            de.rasier.speicher.energy.DeviceDay(date = full, batteryId = id, pvWh = 316, measuredPvWh = 343, measuredPvMs = 86_400_000L),
+            de.rasier.speicher.energy.DeviceDay(date = part, batteryId = id, pvWh = 318, measuredPvWh = 7, measuredPvMs = 20_000_000L),
+        ))
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val stats = hub.batteryStats(java.time.LocalDate.now(zone).minusDays(2), java.time.LocalDate.now(zone), ServerHub.Bucket.DAY)
+        val pv = stats.series.first { it.id == id }.pv
+        assertEquals(343, pv[0], "der vollstaendig gemessene Tag muss die eigene Messung zeigen")
+        assertEquals(318, pv[1], "der nur teilweise gemessene Tag muss beim Geraetezaehler bleiben")
+    }
+
+    @Test
     fun `the automation state is not rewritten on every poll`() = runTest {
         val dir = Files.createTempDirectory("srv").toFile()
         val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)

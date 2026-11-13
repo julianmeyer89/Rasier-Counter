@@ -551,8 +551,22 @@ class ServerHub(
 
     private fun batteryName(id: String) = lastBatteries[id]?.name ?: id.takeLast(6)
 
+    /**
+     * True when our own PV measurement covers (nearly) the whole day, so it can be preferred over the
+     * battery's own counter. [MIN_MEASURED_COVERAGE] leaves room for short gaps and for the hour a
+     * clock change adds or removes.
+     */
+    private fun measuredCoversDay(d: DeviceDay, nowMs: Long): Boolean {
+        if (d.measuredPvMs <= 0) return false
+        val day = try { LocalDate.parse(d.date) } catch (_: Exception) { return false }
+        val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        val elapsed = (nowMs - start).coerceAtMost(86_400_000L)
+        return elapsed > 0 && d.measuredPvMs * 100.0 / elapsed >= MIN_MEASURED_COVERAGE
+    }
+
     /** Daily (or monthly) per-battery energy (Wh) from the stored device day counters. */
     private fun batteryDaily(from: LocalDate, to: LocalDate, monthly: Boolean): BatteryStatsDto {
+        val nowMs = System.currentTimeMillis()
         val fromS = from.toString(); val toS = to.toString()
         val recent = deviceDays.filter { it.date in fromS..toS }
         val keyOf: (DeviceDay) -> String = { if (monthly) it.date.substring(0, 7) else it.date }
@@ -562,10 +576,12 @@ class ServerHub(
             val byKey = recent.filter { it.batteryId == id }.groupBy(keyOf)
             if (byKey.isEmpty()) return@mapNotNull null
             // Our own measurement, to match the day view, the output series and the overall solar
-            // yield — all of which are integrated live power. The device counter `pt` is only the
-            // stand-in for days recorded before that measurement existed; it reads a few percent lower,
-            // and mixing the two made the same chart jump when the bucket size changed.
-            val pv = keys.map { k -> byKey[k]?.sumOf { d -> if (d.measuredPvWh > 0) d.measuredPvWh else d.pvWh } ?: 0 }
+            // yield — all of which are integrated live power. The device counter `pt` stands in for a
+            // day we did not watch end to end: the battery keeps it itself and it covers the whole day,
+            // while our measurement only starts when the server does. Deciding by "did we measure
+            // anything at all" instead would drop the day an update was deployed from 318 Wh to 1 Wh
+            // and leave it there.
+            val pv = keys.map { k -> byKey[k]?.sumOf { d -> if (measuredCoversDay(d, nowMs)) d.measuredPvWh else d.pvWh } ?: 0 }
             val output = keys.map { k -> byKey[k]?.sumOf { it.deliveredWh } ?: 0 }
             // The device counter is the energy that really reached the cells; the integral of the PV
             // surplus is only a stand-in for days (or devices) without that counter.
@@ -919,7 +935,7 @@ class ServerHub(
         lastBatterySnapshot = snapshot
         if (prev != null) {
             val dt = snapshot.timestampMs - prev.timestampMs
-            if (dt in 1..(10 * 60_000L)) {
+            if (dt in 1..config.system.maxGapMs) {
                 val hours = dt / 3_600_000.0
                 val prevById = prev.batteries.associateBy { it.id }
                 for (b in snapshot.batteries) {
@@ -954,7 +970,7 @@ class ServerHub(
                         idleHoursToday[b.id] = (idleHoursToday[b.id] ?: 0.0) + hours
                         idleSelfWhToday[b.id] = (idleSelfWhToday[b.id] ?: 0.0) + selfWhExact
                     }
-                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, vInt, selfWh, zone, pInt)
+                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, vInt, selfWh, zone, pInt, dt)
                     // Measure usable capacity over clean (PV-free) discharge runs: energy out of the
                     // cells (delivered + self-discharge) divided by the SOC drop.
                     trackCapacityWindow(b, a, deliveredW * hours + selfWhExact, cap, snapshot.timestampMs)
@@ -1240,6 +1256,8 @@ class ServerHub(
         const val HISTORY_MS = 8 * 24 * 3_600_000L
         const val MAX_HISTORY = 12_000
         const val HISTORY_SAMPLE_MS = 60_000L
+        /** Percent of a day our own measurement must cover before it is preferred over the device counter. */
+        const val MIN_MEASURED_COVERAGE = 95.0
         const val MAX_EVENTS = 500
         const val SAVE_INTERVAL_MS = 60_000L
         const val DAY_MS = 86_400_000L

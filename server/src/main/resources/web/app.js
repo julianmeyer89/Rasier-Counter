@@ -184,7 +184,7 @@ function renderOverview(s) {
       ${row("Solarertrag", KWH(t.pvWh), "solar")}
       ${row("Einspeisung", KWH(t.gridExportWh), "export")}
       ${row("Autarkie", PCT(t.autarkyPercent))}
-      ${t.dayCoveragePercent != null && t.dayCoveragePercent < 95 ? `<div class="note warn">Der Server hat von diesem Tag nur ${t.dayCoveragePercent < 1 ? "unter 1" : Math.round(t.dayCoveragePercent)} % mitbekommen – alle Werte zählen nur diesen Teil. Lief der Server erst ab dem Abend, steht der Solarertrag zu Recht auf 0, obwohl tagsüber die Sonne schien.</div>` : ""}
+      ${t.dayCoveragePercent != null && t.dayCoveragePercent < 95 ? `<div class="note warn">Für diesen Tag liegen nur ${t.dayCoveragePercent < 1 ? "unter 1" : Math.round(t.dayCoveragePercent)} % der Zeit Speicherdaten vor – alle Werte zählen nur diesen Teil. In der übrigen Zeit war der Server aus oder die Speicher waren nicht erreichbar.</div>` : ""}
       ${t.meterCoveragePercent != null && t.meterCoveragePercent < 99 ? `<div class="note">Netz, Haus und Autarkie decken nur ${Math.round(t.meterCoveragePercent)} % der beobachteten Zeit ab – in der übrigen fehlten Zählerdaten.</div>` : ""}
     </div>`;
   }
@@ -226,8 +226,8 @@ function renderBatteries(s) {
       ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
       ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
-      ${b.measuredPvTodayWh != null ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
-      ${b.dailyPvWh != null ? (b.measuredPvTodayWh != null ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
+      ${b.measuredPvTodayWh ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
+      ${b.dailyPvWh != null ? (b.measuredPvTodayWh ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
       ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}

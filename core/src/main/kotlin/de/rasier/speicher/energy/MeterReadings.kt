@@ -45,6 +45,10 @@ data class DeviceDay(
      * one being silently preferred — the gap between them is a measurement, not an error to hide.
      */
     val measuredPvWh: Int = 0,
+    /** Time span [measuredPvWh] was integrated over. Without it a day whose measurement started at
+     *  noon cannot be told from a day measured end to end, and a chart preferring the measurement
+     *  would quietly show a part-day value next to full days. */
+    val measuredPvMs: Long = 0,
 )
 
 /** Evaluation of the period between two meter readings. Energy in kWh. */
@@ -105,6 +109,7 @@ object MeterEvaluation {
             deliveredWh = existing?.deliveredWh ?: 0,
             selfDischargeWh = existing?.selfDischargeWh ?: 0,
             measuredPvWh = existing?.measuredPvWh ?: 0,
+            measuredPvMs = existing?.measuredPvMs ?: 0,
         )
         return days.filterNot { it.date == date && it.batteryId == batteryId } + updated
     }
@@ -120,8 +125,11 @@ object MeterEvaluation {
         selfDischargeWh: Int,
         zone: ZoneId,
         measuredPvWh: Int = 0,
+        /** Observed time this call accounts for, counted even when every energy value is zero. */
+        observedMs: Long = 0,
     ): List<DeviceDay> {
-        if (chargeWh == 0 && dischargeWh == 0 && deliveredWh == 0 && selfDischargeWh == 0 && measuredPvWh == 0) return days
+        if (chargeWh == 0 && dischargeWh == 0 && deliveredWh == 0 && selfDischargeWh == 0 &&
+            measuredPvWh == 0 && observedMs == 0L) return days
         val date = Instant.ofEpochMilli(timestampMs).atZone(zone).toLocalDate().toString()
         val existing = days.firstOrNull { it.date == date && it.batteryId == batteryId }
         val updated = (existing ?: DeviceDay(date = date, batteryId = batteryId)).let {
@@ -131,6 +139,7 @@ object MeterEvaluation {
                 deliveredWh = it.deliveredWh + deliveredWh,
                 selfDischargeWh = it.selfDischargeWh + selfDischargeWh,
                 measuredPvWh = it.measuredPvWh + measuredPvWh,
+                measuredPvMs = it.measuredPvMs + observedMs,
                 lastSeenMs = timestampMs,
             )
         }

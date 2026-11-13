@@ -84,7 +84,14 @@ class SocBalancer(private val settings: BalancerSettings = BalancerSettings()) {
                     listOf("Ausgleich beendet ($releaseReason): ${heldBattery?.name ?: held} wieder DoD ${state.originalDod} %"),
                 )
             }
-            return BalancerStep(state, emptyList(), emptyList())
+            // Carry the lowest SOC seen while holding: it fills in for a state saved before this
+            // field existed, and it keeps a battery that first drifted down and then charges from
+            // being compared against a value it will never reach again.
+            return BalancerStep(
+                if (heldBattery == null) state
+                else state.copy(heldSocPercent = minOf(state.heldSocPercent ?: heldBattery.socPercent, heldBattery.socPercent)),
+                emptyList(), emptyList(),
+            )
         }
 
         if (!settings.enabled || paused || batteries.size < 2) return BalancerStep(state, emptyList(), emptyList())
