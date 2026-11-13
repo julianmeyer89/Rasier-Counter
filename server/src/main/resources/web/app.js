@@ -184,7 +184,7 @@ function renderOverview(s) {
       ${row("Solarertrag", KWH(t.pvWh), "solar")}
       ${row("Einspeisung", KWH(t.gridExportWh), "export")}
       ${row("Autarkie", PCT(t.autarkyPercent))}
-      ${t.dayCoveragePercent != null && t.dayCoveragePercent < 95 ? `<div class="note warn">Der Server hat von diesem Tag nur ${Math.round(t.dayCoveragePercent)} % mitbekommen – alle Werte zählen nur diesen Teil. Lief der Server erst ab dem Abend, steht der Solarertrag zu Recht auf 0, obwohl tagsüber die Sonne schien.</div>` : ""}
+      ${t.dayCoveragePercent != null && t.dayCoveragePercent < 95 ? `<div class="note warn">Der Server hat von diesem Tag nur ${t.dayCoveragePercent < 1 ? "unter 1" : Math.round(t.dayCoveragePercent)} % mitbekommen – alle Werte zählen nur diesen Teil. Lief der Server erst ab dem Abend, steht der Solarertrag zu Recht auf 0, obwohl tagsüber die Sonne schien.</div>` : ""}
       ${t.meterCoveragePercent != null && t.meterCoveragePercent < 99 ? `<div class="note">Netz, Haus und Autarkie decken nur ${Math.round(t.meterCoveragePercent)} % der beobachteten Zeit ab – in der übrigen fehlten Zählerdaten.</div>` : ""}
     </div>`;
   }
