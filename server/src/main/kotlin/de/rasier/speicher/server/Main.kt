@@ -53,8 +53,15 @@ fun main(args: Array<String>) {
     log("Weboberfläche: http://0.0.0.0:${config.webPort}" + if (config.authToken.isNotBlank()) " (Token nötig)" else "")
     if (config.authToken.isBlank())
         log("Hinweis: kein auth_token gesetzt – jeder, der den Port erreicht, kann die Speicher steuern.")
-    // The effective rates come from the saved dashboard settings, not from config.properties.
+    // Once settings have been saved from the dashboard, user_settings.json is applied over config at
+    // startup, so the matching entries in config.properties no longer do anything. Print the values
+    // that actually apply, or editing the file looks like it worked when it did not.
+    val eff = hub.settingsDto()
     log("Abfrage: CT002 alle ${hub.ct002PollIntervalSeconds} s, Speicher alle ${hub.batteryPollIntervalSeconds} s")
+    log("Wirkungsgrad ${eff.inverterEfficiencyPercent} %, Wechselrichter max. ${eff.inverterMaxW} W, " +
+        "Arbeitspreis ${eff.importCentPerKwh} ct/kWh")
+    log("Diese Werte stammen aus den Einstellungen der Weboberfläche. Gleichnamige Einträge in " +
+        "config.properties werden dadurch überschrieben und bleiben wirkungslos.")
 
     runBlocking {
         var connected = false
