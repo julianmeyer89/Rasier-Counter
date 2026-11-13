@@ -21,6 +21,9 @@ data class ServerConfig(
     /** Explicit broker URL override (otherwise read from <certDir>/broker-url). */
     val brokerUrl: String?,
     val dataDir: String,
+    /** Time zone for day boundaries, schedules and labels. The VM usually runs on UTC, which would put
+     *  the statistics day and the calibration times one or two hours off local time. */
+    val timeZone: String = "Europe/Berlin",
     val webPort: Int,
     /** Shared secret required by the web/API (defense in depth behind Tailscale). Empty = none. */
     val authToken: String,
@@ -70,6 +73,7 @@ data class ServerConfig(
                 certDir = str("cert_dir", "certs"),
                 brokerUrl = str("broker_url").ifBlank { null },
                 dataDir = str("data_dir", "data"),
+                timeZone = str("time_zone", "Europe/Berlin"),
                 webPort = int("web_port", 8080),
                 authToken = str("auth_token"),
                 // Legacy single "poll_interval_seconds" still works as the battery fallback.

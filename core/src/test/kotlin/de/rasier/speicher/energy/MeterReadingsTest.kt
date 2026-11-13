@@ -24,6 +24,10 @@ class MeterReadingsTest {
             days = MeterEvaluation.updateDeviceDays(days, "B1", at(date, 12), pvWh = 800, outputWh = 1000, zone = zone)
             days = MeterEvaluation.updateDeviceDays(days, "B1", at(date, 22), pvWh = 1500, outputWh = 2000, zone = zone)
             days = MeterEvaluation.updateDeviceDays(days, "B2", at(date, 22), pvWh = 1500, outputWh = 2000, zone = zone)
+            // What really reached the inverter. The bs counter above says the same here, but it counts
+            // everything that left the cells, so only the measured value feeds the house calculation.
+            days = MeterEvaluation.addBatteryEnergy(days, "B1", at(date, 22), 0, 0, deliveredWh = 2000, selfDischargeWh = 0, zone = zone)
+            days = MeterEvaluation.addBatteryEnergy(days, "B2", at(date, 22), 0, 0, deliveredWh = 2000, selfDischargeWh = 0, zone = zone)
         }
         val p = MeterEvaluation.periods(entries, days, efficiency = 1.0, zone = zone).single()
         assertEquals(35.0, p.importKwh, 1e-9)

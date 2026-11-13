@@ -32,8 +32,13 @@ fun main(args: Array<String>) {
 
     log("Rasier Speicher Server startet (${if (config.demo) "Demo" else "Live"})")
 
-    val link: DeviceLink = if (config.demo) SimDeviceLink() else CloudDeviceLink(config, log)
-    val hub = ServerHub(config, link, File(config.dataDir), log = log)
+    val zone = runCatching { java.time.ZoneId.of(config.timeZone) }.getOrElse {
+        log("Zeitzone '${config.timeZone}' unbekannt, nutze Europe/Berlin.")
+        java.time.ZoneId.of("Europe/Berlin")
+    }
+    log("Zeitzone: $zone (Tagesgrenzen, Zeitpläne und Beschriftungen)")
+    val link: DeviceLink = if (config.demo) SimDeviceLink(zone) else CloudDeviceLink(config, log)
+    val hub = ServerHub(config, link, File(config.dataDir), zone, log)
     val web = WebServer(hub, config.webPort, config.authToken)
 
     Runtime.getRuntime().addShutdownHook(Thread {

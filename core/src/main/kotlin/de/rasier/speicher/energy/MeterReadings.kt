@@ -25,7 +25,11 @@ data class DeviceDay(
     val date: String,
     val batteryId: String,
     val pvWh: Int = 0,
+    /** Device counter `bs` (out of the cells, losses included). */
     val outputWh: Int = 0,
+    /** Device counters `bc` (into the cells) and `it` (to the inverter). */
+    val deviceChargeWh: Int = 0,
+    val deviceInverterWh: Int = 0,
     val lastSeenMs: Long = 0,
     /** Integrated energy into/out of the battery cells (net PV-minus-output), for per-battery charts. */
     val chargeWh: Int = 0,
@@ -76,6 +80,8 @@ object MeterEvaluation {
         pvWh: Int?,
         outputWh: Int?,
         zone: ZoneId,
+        deviceChargeWh: Int? = null,
+        deviceInverterWh: Int? = null,
     ): List<DeviceDay> {
         if (pvWh == null && outputWh == null) return days
         val date = Instant.ofEpochMilli(timestampMs).atZone(zone).toLocalDate().toString()
@@ -85,6 +91,8 @@ object MeterEvaluation {
             batteryId = batteryId,
             pvWh = maxOf(existing?.pvWh ?: 0, pvWh ?: 0),
             outputWh = maxOf(existing?.outputWh ?: 0, outputWh ?: 0),
+            deviceChargeWh = maxOf(existing?.deviceChargeWh ?: 0, deviceChargeWh ?: 0),
+            deviceInverterWh = maxOf(existing?.deviceInverterWh ?: 0, deviceInverterWh ?: 0),
             lastSeenMs = timestampMs,
             chargeWh = existing?.chargeWh ?: 0,
             dischargeWh = existing?.dischargeWh ?: 0,
@@ -146,10 +154,9 @@ object MeterEvaluation {
                 toMs = b.timestampMs,
                 importKwh = import,
                 exportKwh = export,
-                // Real delivered energy (live output), not the device counter `bs` which also counts
-                // self-discharge. Fall back to the device counter only for old days recorded before
-                // deliveredWh existed (deliveredWh == 0 but outputWh > 0).
-                batteryOutputKwh = if (coveredDays > 0) inPeriod.sumOf { if (it.deliveredWh > 0 || it.outputWh == 0) it.deliveredWh else it.outputWh } / 1000.0 else null,
+                // Measured delivered energy only. The device counter `bs` counts everything that left
+                // the cells, losses included, so falling back to it would silently inflate the result.
+                batteryOutputKwh = if (coveredDays > 0) inPeriod.sumOf { it.deliveredWh } / 1000.0 else null,
                 pvKwh = if (coveredDays > 0) inPeriod.sumOf { it.pvWh } / 1000.0 else null,
                 batteryDaysCovered = coveredDays,
                 days = (b.timestampMs - a.timestampMs) / 86_400_000.0,

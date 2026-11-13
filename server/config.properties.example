@@ -23,6 +23,10 @@ cert_dir=certs
 # Wo Statistik und Verlauf gespeichert werden:
 data_dir=data
 
+# Time zone for day boundaries, schedules and labels. The VM often runs on UTC, which would put the
+# statistics day and the calibration times one or two hours off local time.
+time_zone=Europe/Berlin
+
 # Weboberfläche
 web_port=8080
 # Zusätzlicher Schutz neben Tailscale (leer = keiner):

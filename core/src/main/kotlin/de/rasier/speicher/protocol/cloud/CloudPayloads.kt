@@ -3,6 +3,7 @@ package de.rasier.speicher.protocol.cloud
 import de.rasier.speicher.control.BatteryCommand
 import de.rasier.speicher.model.BatteryState
 import de.rasier.speicher.model.ChargeMode
+import de.rasier.speicher.model.ManualSlot
 import de.rasier.speicher.model.MeterReading
 
 /**
@@ -48,13 +49,27 @@ object CloudPayloads {
                 else -> ChargeMode.UNKNOWN
             },
             adaptiveMode = fields.int("md")?.let { it == 1 },
+            manualSlot = fields.int("d1")?.let {
+                ManualSlot(it == 1, minuteOfDay(fields["e1"]) ?: 0, minuteOfDay(fields["f1"]) ?: 0, fields.int("h1") ?: 0)
+            },
             surplusFeedIn = fields.int("tc_dis")?.let { it == 0 },
             dailyPvWh = fields.int("pt"),
             dailyOutputWh = fields.int("bs"),
+            dailyChargeWh = fields.int("bc"),
+            dailyInverterWh = fields.int("it"),
             firmware = if (vv != null) "$vv.${sv ?: 0}" else null,
             deviceType = type,
             temperatureC = fields.int("th"),
         )
+    }
+
+    /** Parses a device time like "23:59" into minutes since midnight. */
+    private fun minuteOfDay(v: String?): Int? {
+        val p = v?.split(":") ?: return null
+        if (p.size != 2) return null
+        val h = p[0].toIntOrNull() ?: return null
+        val m = p[1].toIntOrNull() ?: return null
+        return h * 60 + m
     }
 
     fun parseMeter(fields: Map<String, String>, timestampMs: Long): MeterReading? {

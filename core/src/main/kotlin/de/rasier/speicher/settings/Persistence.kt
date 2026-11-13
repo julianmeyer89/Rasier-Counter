@@ -10,11 +10,20 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
 
-/** Short history for charts: one compact point per sample. */
+/**
+ * Short history for charts: one compact point per minute.
+ *
+ * The server stores the AVERAGE over the minute, not a single instant, so the statistics rebuilt from
+ * it match the live integration. [gridMinW]/[gridMaxW] keep short peaks visible despite the averaging.
+ * [ids] names the batteries behind the positional lists; older points without it are positional only.
+ */
 @Serializable
 data class HistoryPoint(
     val t: Long,
     val gridW: Int?,
+    val gridMinW: Int? = null,
+    val gridMaxW: Int? = null,
+    val ids: List<String> = emptyList(),
     val pvW: Int,
     val outW: Int,
     val soc: List<Int>,

@@ -66,4 +66,17 @@ class CloudPayloadsTest {
         assertEquals("cd=10", payload)
         assertTrue("cd=11" !in payload) // factory reset must never be produced
     }
+
+    /** A real status frame of the owner's battery, so the field mapping is checked against the device. */
+    @Test
+    fun `the daily counters and the manual schedule of a real frame are parsed`() {
+        val raw = "p1=0,p2=0,w1=0,w2=0,pe=22,vv=110,sv=9,cs=0,cd=1,am=0,o1=0,o2=0,do=80,lv=80,cj=1,kn=492,g1=0,g2=0,b1=0,b2=0,md=1,d1=1,e1=0:0,f1=23:59,h1=800,d2=0,e2=0:1,f2=0:2,h2=80,d3=0,e3=0:1,f3=0:2,h3=80,sg=1,sp=80,st=56,tl=18,th=19,tc=0,tf=0,fc=202310231502,id=5,a0=22,a1=0,a2=0,l0=0,l1=0,c0=1,c1=4,bc=184,bs=102,pt=316,it=125,m0=16,m1=33,m2=6,m3=0,d4=0,e4=0:1,f4=0:2,h4=80,d5=0,e5=0:1,f5=0:2,h5=80,lmo=1880,lmi=1267,lmf=0,uv=107,sm=0,bn=0,ct_t=3,tc_dis=1"
+        val b = CloudPayloads.parseBattery(CloudPayloads.parseFields(raw), "dev1", "Speicher 2", "HMJ-2", 1)!!
+        assertEquals(22, b.socPercent)
+        assertEquals(316, b.dailyPvWh)          // pt
+        assertEquals(102, b.dailyOutputWh)      // bs: out of the cells, losses included
+        assertEquals(184, b.dailyChargeWh)      // bc: into the cells
+        assertEquals(125, b.dailyInverterWh)    // it: to the inverter
+        assertEquals(de.rasier.speicher.model.ManualSlot(true, 0, 23 * 60 + 59, 800), b.manualSlot)
+    }
 }

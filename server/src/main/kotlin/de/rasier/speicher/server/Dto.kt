@@ -66,8 +66,13 @@ data class BatteryDto(
     val measuredCapacityWh: Int? = null,
     val capacityDeviationPercent: Int? = null,
     val calibrationRecommended: Boolean = false,
-    /** Device daily output counter `bs` (includes self-discharge) — kept for reference. */
+    /** Device counter `bs`: everything that left the cells today, losses included. */
     val dailyOutputWh: Int?,
+    /** Device counters `bc` (into the cells) and `it` (to the inverter), and the gap between
+     *  `bs` and `it`: energy that left the cells without ever reaching the inverter. */
+    val dailyChargeWh: Int? = null,
+    val dailyInverterWh: Int? = null,
+    val deviceLossTodayWh: Int? = null,
     /** Real energy delivered to the inverter today (integrated live output). */
     val deliveredTodayWh: Int? = null,
     /** Energy lost to self-discharge today, and the recent idle self-discharge power (W). */
@@ -92,12 +97,16 @@ data class EnergyDto(
     val autarkyPercent: Double?,
     val savingsEuro: Double,
     val gridCostEuro: Double,
+    /** Share of the observed time that had meter data (0-100). Below 100 the grid-based values
+     *  (import, house, autarky, savings) only cover part of the period. */
+    val meterCoveragePercent: Double? = null,
 ) {
     companion object {
         fun from(d: DailyEnergy, t: Tariff) = EnergyDto(
             date = d.date, pvWh = d.pvWh, houseWh = d.houseWh, selfConsumedWh = d.selfConsumedWh,
             gridImportWh = d.gridImportWh, gridExportWh = d.gridExportWh, batteryOutputWh = d.batteryOutputWh,
             autarkyPercent = d.autarky?.times(100), savingsEuro = d.savingsEuro(t), gridCostEuro = d.gridCostEuro(t),
+            meterCoveragePercent = if (d.batteryCoverageMs > 0) d.meterCoverageMs * 100.0 / d.batteryCoverageMs else null,
         )
     }
 }
@@ -226,7 +235,7 @@ data class EventDto(val t: Long, val text: String)
 data class CommandRequest(val batteryId: String, val type: String, val value: Int)
 
 @Serializable
-data class CalibrationRequest(val batteryIds: List<String> = emptyList())
+data class CalibrationRequest(val batteryIds: List<String> = emptyList(), val force: Boolean = false)
 
 @Serializable
 data class MeterRequest(val importKwh: Double, val exportKwh: Double? = null, val dateMs: Long? = null)

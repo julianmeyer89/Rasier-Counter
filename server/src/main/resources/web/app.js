@@ -20,7 +20,10 @@ async function api(path, opts = {}) {
 
 // ---- helpers ----
 const W = (w) => (w == null ? "–" : Math.round(w) + " W");
-const KWH = (wh) => (wh == null ? "–" : (wh / 1000).toFixed(2) + " kWh");
+const KWH = (wh) => (wh == null ? "–" : (wh / 1000).toFixed(2).replace(".", ",") + " kWh");
+// Device names and event texts come from the devices and the log, so they are escaped before they
+// are put into HTML.
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const EUR = (v) => (v == null ? "–" : v.toFixed(2).replace(".", ",") + " €");
 const PCT = (v) => (v == null ? "–" : Math.round(v) + " %");
 const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; };
@@ -144,7 +147,7 @@ function renderOverview(s) {
   let html = "";
   if (s.mode === "demo") html += `<div class="card"><div class="note">Demo-Modus: simulierte Geräte.</div></div>`;
   for (const a of s.alerts) {
-    html += `<div class="alert ${a.severity === "INFO" ? "info" : ""}"><b>${a.title}</b><br>${a.message}</div>`;
+    html += `<div class="alert ${a.severity === "INFO" ? "info" : ""}"><b>${esc(a.title)}</b><br>${esc(a.message)}</div>`;
   }
   html += `<div class="card"><h2>Jetzt</h2>
     <div class="big-row">
@@ -172,10 +175,11 @@ function renderOverview(s) {
       ${row("Solarertrag", KWH(t.pvWh), "solar")}
       ${row("Einspeisung", KWH(t.gridExportWh), "export")}
       ${row("Autarkie", PCT(t.autarkyPercent))}
+      ${t.meterCoveragePercent != null && t.meterCoveragePercent < 99 ? `<div class="note">Netz, Haus und Autarkie decken nur ${Math.round(t.meterCoveragePercent)} % des Tages ab – in der übrigen Zeit fehlten Zählerdaten.</div>` : ""}
     </div>`;
   }
   html += `<div class="card"><h2>24 Stunden</h2><canvas id="histChart"></canvas>
-    <div class="legend"><span style="color:${COL.import}">Netz</span><span style="color:${COL.solar}">Solar</span><span style="color:${COL.battery}">Speicherabgabe</span></div></div>`;
+    <div class="legend"><span style="color:${COL.import}">Netz (Minuten-Mittel)</span><span style="color:#f0a58f">Spitze</span><span style="color:${COL.solar}">Solar</span><span style="color:${COL.battery}">Speicherabgabe</span></div></div>`;
   const q = s.meterFreshPercent;
   const qIcon = q == null ? "" : (q >= 95 ? "✅ " : q >= 80 ? "🟡 " : "⚠️ ");
   const qRow = q == null ? "" : row(qIcon + "Datenqualität CT002", q + " %");
@@ -198,7 +202,7 @@ function renderBatteries(s) {
     ${s.group.heldBatteryId ? `<div class="note">Ausgleich aktiv: ein Speicher pausiert.</div>` : ""}
   </div>`;
   for (const b of s.batteries) {
-    html += `<div class="card"><h2>${b.name}</h2>
+    html += `<div class="card"><h2>${esc(b.name)}</h2>
       <div class="bar"><div style="width:${b.socPercent}%"></div></div><div style="height:8px"></div>
       ${row("Ladestand", b.socPercent + " %")}
       ${b.capacityWh != null ? row("Gespeichert", KWH(b.capacityWh * b.socPercent / 100)) : ""}
@@ -207,7 +211,11 @@ function renderBatteries(s) {
       ${row("Entladetiefe (DoD)", b.dodPercent != null ? b.dodPercent + " % (Mindestladestand " + (100 - b.dodPercent) + " %)" : "–")}
       ${row("Lademodus", chargeModeLabel(b.chargeMode))}
       ${row("Adaptiver Modus", b.adaptiveMode == null ? "–" : b.adaptiveMode ? "an" : "aus")}
-      ${(b.deliveredTodayWh ?? b.dailyOutputWh) != null ? row("Abgabe heute", KWH(b.deliveredTodayWh ?? b.dailyOutputWh), "battery") : ""}
+      ${b.deliveredTodayWh != null ? row("Abgabe heute (gemessen)", KWH(b.deliveredTodayWh), "battery") : ""}
+      ${b.dailyInverterWh != null ? subRow("an den Wechselrichter (Gerät)", KWH(b.dailyInverterWh)) : ""}
+      ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
+      ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
+      ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
       ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh), "solar") : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
       ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : ""}
@@ -217,6 +225,7 @@ function renderBatteries(s) {
       <div style="height:10px"></div>
       <label class="field">Entladetiefe: <b id="dodv-${b.id}">${b.dodPercent ?? 90}</b> % → entlädt bis <b>${100 - (b.dodPercent ?? 90)} %</b> Ladestand</label>
       <input type="range" min="0" max="100" value="${b.dodPercent ?? 90}" oninput="document.getElementById('dodv-${b.id}').textContent=this.value" id="dod-${b.id}">
+      ${(b.dodPercent ?? 90) < 10 ? `<div class="note warn">Entladetiefe unter 10 %: dieser Speicher gibt nichts ab.</div>` : ""}
       <button class="sec" onclick="sendCmd('${b.id}','dod',+document.getElementById('dod-${b.id}').value)">DoD setzen</button>
       <button class="sec" onclick="sendCmd('${b.id}','chargeMode', ${b.chargeMode === "CHARGE_THEN_DISCHARGE" ? 0 : 1})">Lademodus wechseln</button>
       ${b.adaptiveMode === true ? `<button class="sec" onclick="sendCmd('${b.id}','adaptive',0)">Auf Manuell (Zeitplan)</button>` : ""}
@@ -387,9 +396,12 @@ async function sendCmd(batteryId, type, value) {
   } catch (e) { toast("Fehler: " + e.message); }
 }
 
+let histCache = null, histAt = 0;
 async function loadHistory() {
   try {
-    const h = await api("history?hours=24");
+    // The 24 h history is a few hundred kB; re-fetching it on every 10 s refresh is pure load.
+    if (!histCache || Date.now() - histAt > 60000) { histCache = await api("history?hours=24"); histAt = Date.now(); }
+    const h = histCache;
     const c = document.getElementById("histChart");
     if (!c || !h.points.length) return;
     const t0 = h.points[0].t, t1 = h.points[h.points.length - 1].t;
@@ -399,6 +411,8 @@ async function loadHistory() {
       xTicks.push({ x: tx, label: new Date(tx).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) });
     }
     lineChart(c, [
+      // Stored values are minute averages; the peak line keeps short spikes visible.
+      { color: "#f0a58f", points: h.points.filter(p => p.gridMaxW != null).map(p => [p.t, p.gridMaxW]) },
       { color: COL.import, points: h.points.filter(p => p.gridW != null).map(p => [p.t, p.gridW]) },
       { color: COL.solar, points: h.points.map(p => [p.t, p.pvW]) },
       { color: COL.battery, points: h.points.map(p => [p.t, p.outW]) },
@@ -627,7 +641,7 @@ async function renderCalibration() {
     html += row("Schritt", c.phase) + row("Fortschritt", (c.index + 1) + " von " + c.total) + row("Gestartet", ago(c.startedMs));
     html += `<div style="height:8px"></div><button class="sec" onclick="calAbort()">Abbrechen</button>`;
   }
-  if (c && c.results) for (const r of c.results) html += row((r.success ? "✅ " : "❌ ") + r.batteryId.slice(-6), r.message);
+  if (c && c.results) for (const r of c.results) html += row((r.success ? "✅ " : "❌ ") + esc(r.batteryId.slice(-6)), esc(r.message));
   if (!s.automationsMayWrite) html += `<div class="note warn" style="margin-top:8px">„Automatik darf schreiben“ ist aus. Die Kalibrierung macht dann nur Vorschläge.</div>`;
   html += `</div>`;
   html += `<div class="card"><h2>Protokoll</h2><div class="events" id="events">lädt…</div></div>`;
@@ -635,14 +649,25 @@ async function renderCalibration() {
   loadEvents();
 }
 
-async function calStart(ids) { await api("calibration/start", { method: "POST", body: JSON.stringify({ batteryIds: ids }) }); toast("Gestartet"); setTimeout(refresh, 1000); }
+async function calStart(ids, force) {
+  try {
+    const r = await api("calibration/start", { method: "POST", body: JSON.stringify({ batteryIds: ids, force: !!force }) });
+    if (r && r.ok === false) {
+      if (confirm("Kalibrierung nicht gestartet:\n\n" + r.reason + "\n\nTrotzdem starten?")) return calStart(ids, true);
+      toast("Nicht gestartet");
+      return;
+    }
+    toast("Gestartet");
+    setTimeout(refresh, 1000);
+  } catch (e) { toast("Fehler: " + e.message); }
+}
 async function calAbort() { await api("calibration/abort", { method: "POST" }); toast("Abgebrochen"); setTimeout(refresh, 1000); }
 
 async function loadEvents() {
   try {
     const ev = await api("events");
     const d = document.getElementById("events");
-    if (d) d.innerHTML = ev.map(e => `<div>${new Date(e.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} ${e.text}</div>`).join("") || "Keine Einträge.";
+    if (d) d.innerHTML = ev.map(e => `<div>${new Date(e.t).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} ${esc(e.text)}</div>`).join("") || "Keine Einträge.";
   } catch (e) { /* ignore */ }
 }
 
@@ -844,8 +869,13 @@ async function refresh() {
     renderActive();
   } catch (e) { /* token prompt or transient */ }
 }
+/** True while the user is in a field or on a slider: re-rendering would reset their input. */
+function isEditing() {
+  const a = document.activeElement;
+  return !!a && (a.tagName === "INPUT" || a.tagName === "SELECT" || a.tagName === "TEXTAREA");
+}
 function renderActive() {
-  if (!lastState) return;
+  if (!lastState || isEditing()) return;
   if (activeTab === "overview") renderOverview(lastState);
   else if (activeTab === "batteries") renderBatteries(lastState);
   else if (activeTab === "stats") renderStats();

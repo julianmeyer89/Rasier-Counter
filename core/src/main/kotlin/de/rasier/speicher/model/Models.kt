@@ -2,6 +2,10 @@ package de.rasier.speicher.model
 
 import kotlinx.serialization.Serializable
 
+/** One slot of the manual timetable set in the Marstek app (the calibration needs it to empty). */
+@Serializable
+data class ManualSlot(val enabled: Boolean, val startMinute: Int, val endMinute: Int, val watts: Int)
+
 /** How a B2500 combines charging and discharging. */
 @Serializable
 enum class ChargeMode {
@@ -34,9 +38,17 @@ data class BatteryState(
     val dodPercent: Int? = null,
     val chargeMode: ChargeMode = ChargeMode.UNKNOWN,
     val adaptiveMode: Boolean? = null,
+    /** First slot of the manual timetable, as reported by the device. */
+    val manualSlot: ManualSlot? = null,
     val surplusFeedIn: Boolean? = null,
     val dailyPvWh: Int? = null,
+    /** Device counter `bs`: energy that LEFT THE CELLS today. Not the same as what reached the
+     *  inverter - the difference is loss, so this must never be shown as "delivered". */
     val dailyOutputWh: Int? = null,
+    /** Device counter `bc`: energy charged INTO the cells today. */
+    val dailyChargeWh: Int? = null,
+    /** Device counter `it`: energy delivered to the inverter today. */
+    val dailyInverterWh: Int? = null,
     val firmware: String? = null,
     val deviceType: String? = null,
     val temperatureC: Int? = null,

@@ -23,7 +23,6 @@ import de.rasier.speicher.model.SystemSnapshot
 import de.rasier.speicher.settings.EventEntry
 import de.rasier.speicher.settings.FileStore
 import de.rasier.speicher.settings.HistoryPoint
-import de.rasier.speicher.settings.toHistoryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -74,12 +73,25 @@ class ServerHub(
     val state: StateFlow<StateDto> = _state
 
     val tariff: Tariff get() = config.tariff
+    /** Time zone used for day boundaries and schedules; the web layer labels dates with it. */
+    val timeZone: ZoneId get() = zone
     val ct002PollIntervalSeconds: Double get() = config.ct002PollIntervalSeconds
     val batteryPollIntervalSeconds: Int get() = config.batteryPollIntervalSeconds
 
     private var lastBatteryPollMs = 0L
     private var lastMeterTimestampMs = 0L
     private var lastHistorySampleMs = 0L
+    // Running sums since the last history point: the stored value is the minute's average instead of a
+    // single instant, so the statistics rebuilt from it match the live integration.
+    private var accGrid = 0.0
+    private var accGridN = 0
+    private var accGridMin = 0
+    private var accGridMax = 0
+    private var accMeterPhase: List<Int> = emptyList()
+    private val accBatPv = linkedMapOf<String, Double>()
+    private val accBatOut = linkedMapOf<String, Double>()
+    private val accBatN = linkedMapOf<String, Int>()
+    private val accSoc = linkedMapOf<String, Int>()
     private var lastBatterySnapshot: SystemSnapshot? = null
     private val chargeRemainder = HashMap<String, Double>()
     private val dischargeRemainder = HashMap<String, Double>()
@@ -101,6 +113,8 @@ class ServerHub(
     private var lastFailureEventMs = 0L
     private var lastRelinkMs = 0L
     private var linkDownPushed = false
+    private var meterDownPushed = false
+    private var meterRecoveryTries = 0
     // Settings that were sent but not yet confirmed by the device, plus the warnings about those
     // that never arrived (kept apart from the monitor alerts, which are replaced on every tick).
     private val pending = mutableListOf<PendingWrite>()
@@ -179,7 +193,7 @@ class ServerHub(
             // Self-heal: if the CT002 goes silent while the batteries keep reporting, the CT's cloud
             // topic has likely rotated and we are subscribed to the old one. Mark since when, so the end
             // of this method can reconnect (a fresh login re-derives the current topic).
-            if (meterFresh) ctStaleSinceMs = 0L
+            if (meterFresh) { ctStaleSinceMs = 0L; meterRecoveryTries = 0 }
             else if (snapshot.batteries.isNotEmpty() && ctStaleSinceMs == 0L) ctStaleSinceMs = nowMs
         }
         if (meterTs > 0L) lastMeterTimestampMs = meterTs
@@ -195,19 +209,37 @@ class ServerHub(
 
         val prevCal = autoState.calibration
         val tick = engine.tick(autoState, snapshot, nowMs)
-        autoState = tick.state
-        applyCommands(tick.commands, nowMs, automatic = true)
+        // With writing disabled nothing is actually sent, so the automation must not move on as if it
+        // had been: only the bookkeeping is kept, and the same commands are offered again next cycle
+        // (which is also what keeps the suggestions on screen instead of flashing by once).
+        var next = if (config.automationsMayWrite) tick.state
+        else autoState.copy(lastSeenMs = tick.state.lastSeenMs, names = tick.state.names, monitor = tick.state.monitor)
+        var commands = tick.commands
+        // A scheduled run must pass the same checks as a manual one, or it would block the battery for
+        // days in winter and end in a stop.
+        val startedBySchedule = (prevCal == null || prevCal.finished) && next.calibration?.finished == false
+        if (startedBySchedule) {
+            val blockers = calibrationBlockers(next.calibration!!.queue)
+            if (blockers.isNotEmpty()) {
+                addEvents(listOf("Geplante Kalibrierung nicht gestartet: ${blockers.joinToString("; ")}"), nowMs)
+                pushNtfy("Kalibrierung nicht gestartet", blockers.joinToString("; "), "default", "warning")
+                next = next.copy(calibration = null, lastCalibrationFinishedMs = nowMs)
+                commands = emptyList()
+            }
+        }
+        autoState = next
+        applyCommands(commands, nowMs, automatic = true)
         alerts = tick.alerts
         addEvents(tick.events, nowMs)
         notifyCalibration(prevCal, autoState.calibration, nowMs)
         store.saveAutomation(autoState)
         store.saveAlerts(alerts)
 
-        // Downsample the display history to ~1 point/min so it covers days even at a fast poll rate.
-        // (Daily totals keep full poll resolution; this list only feeds the charts.)
+        // Display history: ~1 point/min, but averaged over every poll of that minute.
+        accumulateHistory(snapshot)
         if (nowMs - lastHistorySampleMs >= HISTORY_SAMPLE_MS) {
             lastHistorySampleMs = nowMs
-            history = (history + snapshot.toHistoryPoint()).filter { nowMs - it.t <= HISTORY_MS }.takeLast(MAX_HISTORY)
+            flushHistory(nowMs)
         }
         persist(nowMs)
         rebuild(nowMs)
@@ -222,11 +254,17 @@ class ServerHub(
     private suspend fun recoverMeterIfStuck(nowMs: Long) {
         if (ctStaleSinceMs == 0L || nowMs - ctStaleSinceMs < CT_STALE_RECONNECT_MS) return
         if (nowMs - lastReconnectMs < RECONNECT_COOLDOWN_MS) return
+        // A few attempts per silent spell; after that the warning and the push have to do the work
+        // instead of reconnecting every few minutes for hours.
+        if (meterRecoveryTries >= METER_RECOVERY_TRIES) return
+        meterRecoveryTries++
         lastReconnectMs = nowMs
         addEvents(listOf("CT002 seit ${(nowMs - ctStaleSinceMs) / 60_000} min stumm (Speicher ok) – verbinde neu…"), nowMs)
         if (relink()) {
-            ctStaleSinceMs = 0L
-            addEvents(listOf("Neu verbunden – CT002-Topic aufgefrischt."), nowMs)
+            // Reconnecting does NOT mean data flows again: only a fresh reading clears the silence (see
+            // poll). Otherwise a successful reconnect would reset the clock every few minutes and the
+            // "no meter data" warning could never reach its threshold.
+            addEvents(listOf("Neu verbunden – warte auf CT002-Daten."), nowMs)
         } else {
             // The link is closed now, so every poll fails from here on: relinkIfDead keeps trying.
             addEvents(listOf("Neuverbindung fehlgeschlagen, wird weiter versucht."), nowMs)
@@ -324,15 +362,80 @@ class ServerHub(
         ok
     }
 
-    suspend fun startCalibration(batteryIds: List<String>) = mutex.withLock {
+    /**
+     * Starts a calibration. Returns the reasons why it did NOT start, empty when it is running.
+     * [force] skips the checks for a user who knows what they are doing.
+     */
+    suspend fun startCalibration(batteryIds: List<String>, force: Boolean = false): List<String> = mutex.withLock {
         val now = System.currentTimeMillis()
         val ids = batteryIds.ifEmpty { link.batteryIds }
+        val blockers = if (force) emptyList() else calibrationBlockers(ids)
+        if (blockers.isNotEmpty()) {
+            addEvents(listOf("Kalibrierung nicht gestartet: ${blockers.joinToString("; ")}"), now)
+            rebuild(now)
+            return@withLock blockers
+        }
         val r = engine.startCalibration(autoState, ids, now)
         autoState = r.state
         applyCommands(r.commands, now, automatic = true)
         addEvents(r.events, now)
         store.saveAutomation(autoState)
         rebuild(now)
+        emptyList()
+    }
+
+    /**
+     * Why a calibration cannot sensibly run right now: it blocks a battery for days, so the obvious
+     * obstacles are checked before the first command instead of ending in a stop much later.
+     */
+    fun calibrationBlockers(ids: List<String>): List<String> {
+        val out = mutableListOf<String>()
+        if (!config.automationsMayWrite) out += "\"Automatik darf Einstellungen ändern\" ist aus"
+        val cal = config.automation.calibration
+        for (id in ids) {
+            val b = lastBatteries[id] ?: run { out += "${batteryName(id)} liefert keine Daten"; continue }
+            val name = b.name
+            val dod = b.dodPercent
+            if (dod == null) out += "$name: Entladetiefe unbekannt"
+            else if (dod < MIN_CALIBRATION_DOD) out += "$name: Entladetiefe $dod % – nach der Freigabe könnte er nicht entladen"
+            val slot = b.manualSlot
+            if (slot != null && (!slot.enabled || slot.watts <= 0))
+                out += "$name: kein Manuell-Zeitplan hinterlegt (zum Leeren nötig)"
+            val cap = b.capacityWh
+            val pvPerDay = recentDailyPv(id)
+            if (cap != null && pvPerDay != null && pvPerDay > 0) {
+                val needWh = (100 - b.socPercent).coerceAtLeast(0) / 100.0 * cap
+                val days = needWh / pvPerDay
+                if (days * 24 > cal.maxHoursPerBattery)
+                    out += "$name: PV-Ertrag reicht nicht (zuletzt ~${pvPerDay.roundToInt()} Wh/Tag, " +
+                        "bräuchte ~${days.roundToInt()} Tage, Limit ${cal.maxHoursPerBattery / 24} Tage)"
+            }
+        }
+        return out
+    }
+
+    /** Average PV yield per day of the last few completed days, from the device counters. */
+    private fun recentDailyPv(id: String): Double? {
+        val today = LocalDate.now(zone).toString()
+        val days = deviceDays.filter { it.batteryId == id && it.date < today }.sortedBy { it.date }.takeLast(3)
+        if (days.isEmpty()) return null
+        return days.sumOf { it.pvWh }.toDouble() / days.size
+    }
+
+    /** Warns when the CT002 stops delivering while the batteries keep reporting. */
+    private fun meterAlerts(nowMs: Long): List<AlertDto> {
+        if (ctStaleSinceMs == 0L || nowMs - ctStaleSinceMs < METER_ALERT_MS) {
+            if (ctStaleSinceMs == 0L) meterDownPushed = false
+            return emptyList()
+        }
+        val minutes = (nowMs - ctStaleSinceMs) / 60_000
+        if (!meterDownPushed) {
+            meterDownPushed = true
+            pushNtfy("CT002 ohne Daten", "Seit $minutes min keine Zaehlerdaten. Netz, Haus und Autarkie fehlen solange.", "high", "warning")
+        }
+        return listOf(AlertDto("meter-down", "WARN", "CT002 liefert keine Daten",
+            "Seit $minutes Minuten kommen keine Zählerwerte. Netzbezug, Hausverbrauch und Autarkie werden " +
+                "für diese Zeit nicht gezählt. Der Server versucht die Verbindung selbst aufzufrischen.", nowMs))
     }
 
     suspend fun abortCalibration() = mutex.withLock {
@@ -440,13 +543,14 @@ class ServerHub(
         val keyOf: (DeviceDay) -> String = { if (monthly) it.date.substring(0, 7) else it.date }
         val keys = recent.map(keyOf).distinct().sorted()
         val labels = keys.map { if (monthly) it.substring(5) + "." + it.substring(0, 4) else it.substring(8, 10) + "." + it.substring(5, 7) + "." }
-        fun deliveredOf(d: DeviceDay) = if (d.deliveredWh > 0 || d.outputWh == 0) d.deliveredWh else d.outputWh
         val series = link.batteryIds.mapNotNull { id ->
             val byKey = recent.filter { it.batteryId == id }.groupBy(keyOf)
             if (byKey.isEmpty()) return@mapNotNull null
             val pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 }
-            val output = keys.map { k -> byKey[k]?.sumOf { deliveredOf(it) } ?: 0 }
-            val charge = keys.map { k -> byKey[k]?.sumOf { it.chargeWh } ?: 0 }
+            val output = keys.map { k -> byKey[k]?.sumOf { it.deliveredWh } ?: 0 }
+            // The device counter is the energy that really reached the cells; the integral of the PV
+            // surplus is only a stand-in for days (or devices) without that counter.
+            val charge = keys.map { k -> byKey[k]?.sumOf { d -> if (d.deviceChargeWh > 0) d.deviceChargeWh else d.chargeWh } ?: 0 }
             val self = keys.map { k -> byKey[k]?.sumOf { it.selfDischargeWh } ?: 0 }
             BatterySeriesDto(
                 id = id, name = batteryName(id), pv = pv, output = output, charge = charge, selfDischarge = self,
@@ -479,7 +583,7 @@ class ServerHub(
         for (p in points) {
             val slot = ((p.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
             for (idx in ids.indices) {
-                val s = p.soc.getOrNull(idx) ?: continue
+                val s = p.slotOf(ids[idx], idx)?.let { p.soc.getOrNull(it) } ?: continue
                 socSum[idx][slot] += s; socCnt[idx][slot]++
             }
         }
@@ -490,14 +594,18 @@ class ServerHub(
             val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
             val hours = dt / 3_600_000.0
             for (idx in ids.indices) {
-                val apv = a.batPvW.getOrNull(idx) ?: continue
-                val bpv = b.batPvW.getOrNull(idx) ?: continue
-                val aout = a.batOutW.getOrNull(idx) ?: 0; val bout = b.batOutW.getOrNull(idx) ?: 0
+                // Look the battery up by id: when one drops out of a snapshot the lists get shorter and
+                // a positional read would silently attribute the other battery's values to it.
+                val ai = a.slotOf(ids[idx], idx) ?: continue
+                val bi = b.slotOf(ids[idx], idx) ?: continue
+                val apv = a.batPvW.getOrNull(ai) ?: continue
+                val bpv = b.batPvW.getOrNull(bi) ?: continue
+                val aout = a.batOutW.getOrNull(ai) ?: 0; val bout = b.batOutW.getOrNull(bi) ?: 0
                 cov[idx][slot] += hours
                 pvE[idx][slot] += (apv + bpv) / 2.0 * hours
                 outE[idx][slot] += (aout + bout) / 2.0 * hours
                 chgE[idx][slot] += (maxOf(apv - aout, 0) + maxOf(bpv - bout, 0)) / 2.0 * hours
-                val sa = a.soc.getOrNull(idx); val sb = b.soc.getOrNull(idx)
+                val sa = a.soc.getOrNull(ai); val sb = b.soc.getOrNull(bi)
                 if (sa != null && sb != null && sb < sa && caps[idx] > 0 &&
                     aout <= IDLE_W && bout <= IDLE_W && apv <= IDLE_W && bpv <= IDLE_W) {
                     selfE[idx][slot] += (sa - sb) / 100.0 * caps[idx]
@@ -662,6 +770,50 @@ class ServerHub(
         }
     }
 
+    /** Adds one poll to the running averages behind the next history point. */
+    private fun accumulateHistory(s: SystemSnapshot) {
+        s.meter?.let { m ->
+            if (accGridN == 0) { accGridMin = m.totalW; accGridMax = m.totalW }
+            else { accGridMin = minOf(accGridMin, m.totalW); accGridMax = maxOf(accGridMax, m.totalW) }
+            accGrid += m.totalW
+            accGridN++
+            accMeterPhase = m.phaseW
+        }
+        for (b in s.batteries) {
+            accBatPv[b.id] = (accBatPv[b.id] ?: 0.0) + b.totalPvW
+            accBatOut[b.id] = (accBatOut[b.id] ?: 0.0) + b.totalOutputW
+            accBatN[b.id] = (accBatN[b.id] ?: 0) + 1
+            accSoc[b.id] = b.socPercent
+        }
+    }
+
+    /** Writes the averaged point and starts the next minute. */
+    private fun flushHistory(nowMs: Long) {
+        val ids = accSoc.keys.toList()
+        if (ids.isEmpty() && accGridN == 0) return
+        fun mean(m: Map<String, Double>, id: String) = (m[id] ?: 0.0) / (accBatN[id] ?: 1)
+        val point = HistoryPoint(
+            t = nowMs,
+            gridW = if (accGridN > 0) (accGrid / accGridN).roundToInt() else null,
+            gridMinW = if (accGridN > 0) accGridMin else null,
+            gridMaxW = if (accGridN > 0) accGridMax else null,
+            ids = ids,
+            pvW = ids.sumOf { mean(accBatPv, it) }.roundToInt(),
+            outW = ids.sumOf { mean(accBatOut, it) }.roundToInt(),
+            soc = ids.map { accSoc[it] ?: -1 },
+            batPvW = ids.map { mean(accBatPv, it).roundToInt() },
+            batOutW = ids.map { mean(accBatOut, it).roundToInt() },
+            meterPhaseW = accMeterPhase,
+        )
+        history = (history + point).filter { nowMs - it.t <= HISTORY_MS }.takeLast(MAX_HISTORY)
+        accGrid = 0.0; accGridN = 0; accMeterPhase = emptyList()
+        accBatPv.clear(); accBatOut.clear(); accBatN.clear(); accSoc.clear()
+    }
+
+    /** Position of [id] in a history point: by id when the point carries them, else positional (old data). */
+    private fun HistoryPoint.slotOf(id: String, fallback: Int): Int? =
+        if (ids.isEmpty()) fallback.takeIf { it < soc.size } else ids.indexOf(id).takeIf { it >= 0 }
+
     private fun recordMeterFresh(fresh: Boolean) {
         meterFreshWindow.addLast(fresh)
         while (meterFreshWindow.size > METER_QUALITY_WINDOW) meterFreshWindow.removeFirst()
@@ -731,7 +883,7 @@ class ServerHub(
         if (todayStr != selfDisDay) { selfDisDay = todayStr; idleHoursToday.clear(); idleSelfWhToday.clear() }
         var days = deviceDays
         for (b in snapshot.batteries) {
-            days = MeterEvaluation.updateDeviceDays(days, b.id, b.timestampMs, b.dailyPvWh, b.dailyOutputWh, zone)
+            days = MeterEvaluation.updateDeviceDays(days, b.id, b.timestampMs, b.dailyPvWh, b.dailyOutputWh, zone, b.dailyChargeWh, b.dailyInverterWh)
         }
         // Integrate per-battery charge/discharge (net PV-minus-output) since the previous snapshot.
         // Sub-Wh increments are carried in [chargeRemainder]/[dischargeRemainder] so fast polling adds up.
@@ -913,7 +1065,8 @@ class ServerHub(
         val batteries = lastBatteries.values.sortedBy { it.name }
         val nowDay = LocalDate.now(zone).toString()
         val group = GroupState(batteries)
-        val meter = lastMeter
+        // A reading that stopped coming must not keep sitting in the dashboard as if it were current.
+        val meter = lastMeter?.takeIf { nowMs - it.timestampMs < METER_FRESH_MS }
         val acW = (group.outputW * config.system.inverterEfficiency).roundToInt()
         val calibration = autoState.calibration?.let { run ->
             CalibrationDto(
@@ -948,7 +1101,7 @@ class ServerHub(
             meter = meter?.let { MeterDto(it.phaseW, it.totalW) },
             batteries = batteries.map {
                 val dd = deviceDays.firstOrNull { d -> d.batteryId == it.id && d.date == nowDay }
-                val delivered = dd?.let { d -> if (d.deliveredWh > 0 || d.outputWh == 0) d.deliveredWh else d.outputWh }
+                val delivered = dd?.deliveredWh
                 val selfW = selfDischargePowerW(it.id)
                 val cal = calibrationInfo(it.id, it.capacityWh)
                 BatteryDto(
@@ -958,6 +1111,8 @@ class ServerHub(
                     dailyPvWh = it.dailyPvWh,
                     measuredCapacityWh = cal.measured, capacityDeviationPercent = cal.deviationPct, calibrationRecommended = cal.recommended,
                     dailyOutputWh = it.dailyOutputWh,
+                    dailyChargeWh = it.dailyChargeWh, dailyInverterWh = it.dailyInverterWh,
+                    deviceLossTodayWh = it.dailyOutputWh?.let { bs -> it.dailyInverterWh?.let { inv -> (bs - inv).coerceAtLeast(0) } },
                     deliveredTodayWh = delivered, selfDischargeTodayWh = dd?.selfDischargeWh, selfDischargeW = selfW,
                     selfDischargeHigh = selfW != null && selfW > config.selfDischargeAlertW,
                     temperatureC = it.temperatureC,
@@ -965,7 +1120,7 @@ class ServerHub(
                 )
             },
             today = today()?.let { EnergyDto.from(it, config.tariff) },
-            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
+            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + meterAlerts(nowMs) + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
             lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
@@ -1005,6 +1160,10 @@ class ServerHub(
         const val RELINK_RETRY_MS = 300_000L          // gap between two rebuild attempts
         const val CONFIRM_GRACE_MS = 20_000L          // time a device gets to report a new setting
         const val MAX_SEND_ATTEMPTS = 4               // re-sends before a setting is reported as failed
+        const val METER_FRESH_MS = 120_000L           // older CT002 readings are not shown as current
+        const val METER_ALERT_MS = 600_000L           // warn after this long without meter data
+        const val MIN_CALIBRATION_DOD = 10            // below this a released battery could not discharge
+        const val METER_RECOVERY_TRIES = 3            // reconnect attempts per silent spell of the CT002
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median

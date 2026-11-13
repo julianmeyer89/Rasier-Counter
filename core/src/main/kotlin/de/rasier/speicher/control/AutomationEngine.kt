@@ -64,13 +64,15 @@ class AutomationEngine(private val settings: AutomationSettings, zone: ZoneId = 
             names = state.names + snapshot.batteries.associate { it.id to it.name },
         )
 
-        // Scheduled calibration.
+        // Scheduled calibration. The batteries come from the snapshot when none are configured: the
+        // server only learns its device ids after connecting, i.e. after this engine was built.
         val interval = settings.calibration.intervalDays
-        val calibrationIdle = s.calibration == null || s.calibration!!.finished
-        if (interval > 0 && calibrationIdle && settings.batteryIds.isNotEmpty()) {
+        val calibrationIdle = s.calibration == null || s.calibration.finished
+        val ids = settings.batteryIds.ifEmpty { snapshot.batteries.map { it.id } }
+        if (interval > 0 && calibrationIdle && ids.isNotEmpty()) {
             val last = s.lastCalibrationFinishedMs
             if (last != null && nowMs - last >= interval * 86_400_000L) {
-                val started = startCalibration(s, settings.batteryIds, nowMs)
+                val started = startCalibration(s, ids, nowMs)
                 s = started.state
                 commands += started.commands
                 events += "Geplante Kalibrierung (alle $interval Tage)"

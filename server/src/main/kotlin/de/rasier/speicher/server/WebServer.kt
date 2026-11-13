@@ -51,7 +51,7 @@ class WebServer(
                 path == "history" && method == "GET" ->
                     sendJson(ex, HistoryDto.serializer(), hub.history(queryInt(ex, "hours", 24)))
                 path == "stats" && method == "GET" -> {
-                    val today = java.time.LocalDate.now()
+                    val today = java.time.LocalDate.now(hub.timeZone)
                     val from = query(ex, "from")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today.minusDays(6)
                     val to = query(ex, "to")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today
                     val bucket = when (query(ex, "bucket")) {
@@ -64,7 +64,7 @@ class WebServer(
                     sendJson(ex, StatsDto.serializer(), hub.stats(from, to, bucket, label))
                 }
                 path == "batterystats" && method == "GET" -> {
-                    val today = java.time.LocalDate.now()
+                    val today = java.time.LocalDate.now(hub.timeZone)
                     val from = query(ex, "from")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today.minusDays(6)
                     val to = query(ex, "to")?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: today
                     val bucket = when (query(ex, "bucket")) {
@@ -90,8 +90,9 @@ class WebServer(
                 }
                 path == "calibration/start" && method == "POST" -> {
                     val req = json.decodeFromString(CalibrationRequest.serializer(), body(ex))
-                    runBlocking { hub.startCalibration(req.batteryIds) }
-                    send(ex, 200, "application/json", """{"ok":true}""")
+                    val blockers = runBlocking { hub.startCalibration(req.batteryIds, req.force) }
+                    if (blockers.isEmpty()) send(ex, 200, "application/json", """{"ok":true}""")
+                    else send(ex, 200, "application/json", """{"ok":false,"reason":${jsonString(blockers.joinToString("; "))}}""")
                 }
                 path == "calibration/abort" && method == "POST" -> {
                     runBlocking { hub.abortCalibration() }

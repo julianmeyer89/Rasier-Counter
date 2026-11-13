@@ -15,6 +15,7 @@ import java.time.ZoneId
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private fun demoConfig(dir: File, write: Boolean = true) = ServerConfig(
@@ -191,5 +192,83 @@ class WebServerTest {
         val c = URI(url).toURL().openConnection() as HttpURLConnection
         if (token != null) c.setRequestProperty("X-Auth-Token", token)
         return c.responseCode
+    }
+}
+
+/** Reports batteries but never a meter reading, like a CT002 that went silent. */
+private class SilentMeterLink(zone: ZoneId) : DeviceLink {
+    private val sim = de.rasier.speicher.sim.SimulatedSystem(zone)
+    override suspend fun connect() {}
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) =
+        sim.advance(nowMs).copy(meter = null)
+    override suspend fun send(command: BatteryCommand) = sim.execute(command)
+    override val batteryIds: List<String> get() = sim.batteryIds
+    override val status: LinkStatus get() = LinkStatus(true, "Test", null)
+    override fun close() {}
+}
+
+/** The fixes for M1 to M8, as far as they are visible from the server. */
+class ServerFixesTest {
+    private val zone = ZoneId.of("Europe/Berlin")
+
+    @Test
+    fun `the time zone defaults to german time, not the machine's`() {
+        assertEquals("Europe/Berlin", ServerConfig.load(null).timeZone)
+    }
+
+    @Test
+    fun `a silent meter raises a warning and is not shown as a current value`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir), SilentMeterLink(zone), dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        assertTrue(hub.state.value.alerts.none { it.key == "meter-down" }, "zu frueh gewarnt")
+        hub.poll(t0 + ServerHub.METER_ALERT_MS + 60_000L)
+        assertTrue(hub.state.value.alerts.any { it.key == "meter-down" }, "Warnung fehlt")
+        assertNull(hub.state.value.meter, "veralteter Zaehlerwert wird weiter angezeigt")
+    }
+
+    @Test
+    fun `a calibration is refused while the automation may not write`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir, write = false), SimDeviceLink(zone), dir, zone)
+        hub.poll()
+        val blockers = hub.startCalibration(emptyList())
+        assertTrue(blockers.any { it.contains("Automatik") }, blockers.toString())
+        assertTrue(hub.state.value.calibration == null, "trotz Hindernis gestartet")
+        // With force the user can still start it.
+        assertTrue(hub.startCalibration(emptyList(), force = true).isEmpty())
+        assertTrue(hub.state.value.calibration?.running == true)
+    }
+
+    @Test
+    fun `with writing off the calibration does not pretend to progress and suggestions stay`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir, write = false), SimDeviceLink(zone), dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        hub.startCalibration(emptyList(), force = true)
+        hub.poll(t0 + 2000)
+        val first = hub.state.value.calibration?.phase
+        val suggestions = hub.state.value.suggestions.size
+        assertTrue(suggestions > 0, "keine Vorschlaege")
+        repeat(3) { hub.poll(t0 + 4000 + it * 2000L) }
+        assertEquals(first, hub.state.value.calibration?.phase, "Lauf ist ohne gesendete Befehle weitergelaufen")
+        assertEquals(suggestions, hub.state.value.suggestions.size, "Vorschlaege sind verschwunden")
+    }
+
+    @Test
+    fun `the stored history is the average of the minute, not one instant`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val t0 = System.currentTimeMillis()
+        repeat(40) { hub.poll(t0 + it * 2000L) }   // more than a minute of polls
+        val points = hub.history(24).points
+        assertTrue(points.isNotEmpty(), "kein Verlaufspunkt")
+        val p = points.last()
+        assertTrue(p.ids.size == 2, "Verlaufspunkt nennt die Speicher nicht: ${p.ids}")
+        assertTrue(p.gridMinW != null && p.gridMaxW != null, "Spitzen fehlen")
+        val mean = p.gridW!!
+        assertTrue(p.gridMinW!! <= mean && mean <= p.gridMaxW!!, "Mittelwert liegt nicht zwischen Min und Max")
     }
 }

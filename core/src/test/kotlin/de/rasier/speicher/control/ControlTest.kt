@@ -254,3 +254,20 @@ class AutomationEngineTest {
         assertTrue(r.commands.any { it is BatteryCommand.SetChargeMode })
     }
 }
+
+/** The scheduled calibration must not depend on ids that are only known after connecting. */
+class AutomationScheduleTest {
+    private val engine = AutomationEngine(AutomationSettings(calibration = CalibrationSettings(intervalDays = 45)))
+
+    @Test
+    fun `the scheduled calibration starts although no battery ids are configured`() {
+        val t0 = 1_700_000_000_000L
+        var state = AutomationState()
+        state = engine.tick(state, snapshot(t0, battery(B1, t = t0), battery(B2, t = t0)), t0).state
+        assertEquals(t0, state.lastCalibrationFinishedMs, "Zaehlung startet nicht")
+        val later = t0 + 46L * 24 * HOUR
+        val r = engine.tick(state, snapshot(later, battery(B1, t = later), battery(B2, t = later)), later)
+        assertEquals(2, r.state.calibration?.queue?.size, "geplante Kalibrierung startet nie")
+    }
+}
+
