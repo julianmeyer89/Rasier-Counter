@@ -247,7 +247,10 @@ function renderBatteries(s) {
     html += `<div class="card"><h2>Vorschläge der Automatik</h2><div class="note">Automatisches Schreiben ist aus.</div>`;
     for (const c of s.suggestions) {
       const label = c.type === "dod" ? "Entladetiefe " + c.value + " %" : c.type === "chargeMode" ? "Lademodus " + (c.value ? "erst voll laden" : "gleichzeitig") : "adaptiv " + (c.value ? "an" : "aus");
-      html += `<div class="row"><span>${c.batteryId.slice(-6)}: ${label}</span><button class="sec" onclick="sendCmd('${c.batteryId}','${c.type}',${c.value})">Ausführen</button></div>`;
+      // The state already carries the names; without this the row showed a slice of the MAC (":00:02").
+      const bat = (s.batteries || []).find(x => x.id === c.batteryId);
+      const who = esc(bat ? bat.name : c.batteryId.slice(-6));
+      html += `<div class="row"><span>${who}: ${label}</span><button class="sec" onclick="sendCmd('${c.batteryId}','${c.type}',${c.value})">Ausführen</button></div>`;
     }
     html += `</div>`;
   }
