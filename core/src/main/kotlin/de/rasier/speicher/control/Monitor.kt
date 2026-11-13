@@ -31,7 +31,15 @@ data class MonitorStep(val state: MonitorState, val alerts: List<Alert>)
  */
 class Monitor(private val settings: MonitorSettings = MonitorSettings()) {
 
-    fun step(state: MonitorState, snapshot: SystemSnapshot, lastSeenMs: Map<String, Long>, names: Map<String, String>, nowMs: Long): MonitorStep {
+    fun step(
+        state: MonitorState,
+        snapshot: SystemSnapshot,
+        lastSeenMs: Map<String, Long>,
+        names: Map<String, String>,
+        nowMs: Long,
+        /** A calibration drives the batteries on purpose; its export and idle phases are not faults. */
+        calibrating: Boolean = false,
+    ): MonitorStep {
         val active = mutableMapOf<String, Alert>()
         val conditionMs = settings.conditionMinutes * 60_000L
 
@@ -47,7 +55,7 @@ class Monitor(private val settings: MonitorSettings = MonitorSettings()) {
 
         val meter = snapshot.meter
         val batteries = snapshot.batteries
-        if (meter != null && batteries.isNotEmpty()) {
+        if (meter != null && batteries.isNotEmpty() && !calibrating) {
             val idleWithCharge = batteries.filter { b ->
                 val floor = b.floorSocPercent ?: 10
                 b.socPercent > floor + 5 && b.totalOutputW < 20

@@ -10,6 +10,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.time.ZoneId
 import kotlin.test.AfterTest
@@ -20,7 +21,7 @@ import kotlin.test.assertTrue
 
 private fun demoConfig(dir: File, write: Boolean = true) = ServerConfig(
     demo = true, cloudBaseUrl = "", email = "", passwordMd5 = "", certDir = "certs", brokerUrl = null,
-    dataDir = dir.path, webPort = 0, authToken = "", ct002PollIntervalSeconds = 2.0, batteryPollIntervalSeconds = 5, cloudHttpIntervalSeconds = 300, selfDischargeAlertW = 25, calibrationDeviationPercent = 15,
+    dataDir = dir.path, webPort = 0, authToken = "", ct002PollIntervalSeconds = 2.0, batteryPollIntervalSeconds = 5, selfDischargeAlertW = 25, calibrationDeviationPercent = 15,
     automationsMayWrite = write, useNoFlashCommands = false, debug = false,
     tariff = Tariff(30.0, 8.0), system = SystemConfig(),
     automation = AutomationSettings(calibration = CalibrationSettings(holdMinutes = 30, intervalDays = 0)),
@@ -185,6 +186,42 @@ class WebServerTest {
         assertEquals(200, code("http://127.0.0.1:$port/api/state", "geheim"))
     }
 
+    @Test
+    fun `write requests are only accepted from the dashboard and only for known batteries`() = runTest {
+        val dir = Files.createTempDirectory("web").toFile()
+        val link = SimDeviceLink(zone)
+        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        hub.poll()
+        val port = java.net.ServerSocket(0).use { it.localPort }
+        val w = WebServer(hub, port, authToken = "")
+        web = w
+        w.start()
+        val base = "http://127.0.0.1:$port"
+        val cmd = """{"batteryId":"${link.batteryIds.first()}","type":"dod","value":50}"""
+
+        // A plain cross-site form POST cannot set this content type.
+        assertEquals(403, post("$base/api/command", cmd, "text/plain"), "falscher Content-Type durchgelassen")
+        assertEquals(403, post("$base/api/command", cmd, null), "ohne Content-Type durchgelassen")
+        // A foreign origin is refused even with the right content type.
+        assertEquals(403, post("$base/api/command", cmd, "application/json", origin = "http://evil.example"), "fremder Origin durchgelassen")
+        // The dashboard itself still works.
+        assertEquals(200, post("$base/api/command", cmd, "application/json"), "Dashboard selbst blockiert")
+        // The meter and anything else is not a valid target.
+        assertEquals(400, post("$base/api/command", """{"batteryId":"fremd","type":"dod","value":50}""", "application/json"), "fremde Geraete-ID akzeptiert")
+        // Static files are served by name only, not by path.
+        assertEquals(404, code("$base/unterordner/app.js", null), "Pfad statt Dateiname bedient")
+    }
+
+    // HttpURLConnection refuses to send an Origin header, so the modern client is used here.
+    private fun post(url: String, body: String, contentType: String?, origin: String? = null): Int {
+        val b = java.net.http.HttpRequest.newBuilder(URI(url))
+            .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+        if (contentType != null) b.header("Content-Type", contentType)
+        if (origin != null) b.header("Origin", origin)
+        return java.net.http.HttpClient.newHttpClient()
+            .send(b.build(), java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode()
+    }
+
     private fun get(url: String): String =
         (URI(url).toURL().openConnection() as HttpURLConnection).inputStream.bufferedReader().readText()
 
@@ -272,3 +309,73 @@ class ServerFixesTest {
         assertTrue(p.gridMinW!! <= mean && mean <= p.gridMaxW!!, "Mittelwert liegt nicht zwischen Min und Max")
     }
 }
+
+/** Reports batteries whose capacity the device stops sending (it is undefined at 0 %). */
+private class CapacityDropLink(zone: ZoneId) : DeviceLink {
+    private val sim = de.rasier.speicher.sim.SimulatedSystem(zone)
+    var drop = false
+    override suspend fun connect() {}
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) =
+        sim.advance(nowMs).let { s -> if (!drop) s else s.copy(batteries = s.batteries.map { it.copy(capacityWh = null) }) }
+    override suspend fun send(command: BatteryCommand) = sim.execute(command)
+    override val batteryIds: List<String> get() = sim.batteryIds
+    override val status: LinkStatus get() = LinkStatus(true, "Test", null)
+    override fun close() {}
+}
+
+/** The smaller findings N1 to N7. */
+class ServerSmallFixesTest {
+    private val zone = ZoneId.of("Europe/Berlin")
+
+    @Test
+    fun `shutdown writes the last minute to disk`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val t0 = System.currentTimeMillis()
+        // The first poll already writes a point; the following ones only accumulate, because both the
+        // minute of the history and the save interval have not elapsed again.
+        repeat(5) { hub.poll(t0 + it * 2000L) }
+        val before = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        hub.shutdown()
+        val after = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        assertTrue(after > before, "beim Beenden wurde der angefangene Verlauf nicht gespeichert ($before -> $after)")
+    }
+
+    @Test
+    fun `the automation state is not rewritten on every poll`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        val f = File(dir, "automation.json")
+        val first = f.lastModified()
+        repeat(5) { hub.poll(t0 + 1000L + it * 1000L) }
+        assertEquals(first, f.lastModified(), "automation.json wird bei jeder Abfrage neu geschrieben")
+    }
+
+    @Test
+    fun `a capacity the device stops reporting is kept`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val link = CapacityDropLink(zone)
+        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        val known = hub.state.value.batteries.first().capacityWh
+        assertTrue(known != null && known > 0)
+        link.drop = true
+        hub.poll(t0 + 6000)
+        assertEquals(known, hub.state.value.batteries.first().capacityWh, "Kapazitaet geht bei 0 % verloren")
+    }
+
+    @Test
+    fun `a battery that cannot discharge is pointed out`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val link = SimDeviceLink(zone)
+        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        hub.poll()
+        hub.manualCommand(BatteryCommand.SetDod(link.batteryIds.first(), 0))
+        hub.poll()
+        assertTrue(hub.state.value.alerts.any { it.key.startsWith("dod-") }, "kein Hinweis auf Entladetiefe 0 %")
+    }
+}
+

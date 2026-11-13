@@ -86,8 +86,10 @@ Die App fragt deshalb höchstens alle paar Sekunden über einen dauerhaft geöff
   - `code` "2" (oder "1") mit `token` bedeutet erfolgreich angemeldet
   - "3" bedeutet unbekanntes Konto, "4" falsches Passwort
 - Geräte: `GET /ems/api/v1/getDeviceList?token=…&mailbox=…`; bei Code 8 neu anmelden.
-- Die Cloud aktualisiert B2500-Daten nur selten. Der CT002 meldet etwa alle 5 Minuten einen Wert
-  ohne Vorzeichen. Deshalb nutzt die App die Cloud nur als Rückfall, wenn sie nicht zu Hause ist.
+- Über **diese HTTP-API** aktualisiert die Cloud B2500-Daten nur selten, und der CT002-Wert kommt
+  dort etwa alle 5 Minuten und ohne Vorzeichen. Deshalb nutzt die App die HTTP-API nur als Rückfall.
+  **Achtung, das gilt nicht für MQTT:** auf dem Statustopic liefern die Geräte im Sekundentakt, und
+  `pwr_t` ist dort vorzeichenbehaftet (negativ = Einspeisung). Der Server nutzt ausschließlich MQTT.
 - Steuern über die Cloud ist nur per MQTT mit Zertifikaten aus der Marstek-App möglich.
   Das nutzt diese App bewusst **nicht**.
 - Ein Login mit dem Hauptkonto kann die offizielle App abmelden. Abhilfe: ein zweites Konto anlegen

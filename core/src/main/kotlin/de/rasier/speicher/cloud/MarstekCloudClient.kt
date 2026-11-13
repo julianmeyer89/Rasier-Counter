@@ -83,23 +83,6 @@ class MarstekCloudClient(
         error("unreachable")
     }
 
-    /** Whether the device is currently connected to the Marstek cloud MQTT broker. */
-    fun mqttOnline(devid: String): Boolean? {
-        val tok = token ?: return null
-        val url = base.newBuilder()
-            .addPathSegments("ems/api/v1/getDeviceMqttStatus")
-            .addQueryParameter("devid", devid)
-            .addQueryParameter("token", tok)
-            .build()
-        val data = getJson(url)["data"] as? JsonObject ?: return null
-        val flag = data["mqtt"] as? JsonPrimitive ?: return null
-        flag.booleanOrNull?.let { return it }
-        return when (flag.content.lowercase()) {
-            "1", "true", "online", "connected" -> true
-            "0", "false", "offline", "disconnected" -> false
-            else -> null
-        }
-    }
 
     private fun getJson(url: HttpUrl): JsonObject {
         val request = Request.Builder()

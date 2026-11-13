@@ -66,6 +66,9 @@ data class BatteryDto(
     val measuredCapacityWh: Int? = null,
     val capacityDeviationPercent: Int? = null,
     val calibrationRecommended: Boolean = false,
+    /** How many clean-discharge measurements exist, and how many are needed before judging. */
+    val capacitySamples: Int = 0,
+    val capacitySamplesNeeded: Int = 2,
     /** Device counter `bs`: everything that left the cells today, losses included. */
     val dailyOutputWh: Int?,
     /** Device counters `bc` (into the cells) and `it` (to the inverter), and the gap between

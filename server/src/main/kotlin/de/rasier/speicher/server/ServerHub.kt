@@ -75,6 +75,8 @@ class ServerHub(
     val tariff: Tariff get() = config.tariff
     /** Time zone used for day boundaries and schedules; the web layer labels dates with it. */
     val timeZone: ZoneId get() = zone
+    /** Ids of the batteries behind the link; commands for anything else are refused. */
+    val batteryIds: List<String> get() = link.batteryIds
     val ct002PollIntervalSeconds: Double get() = config.ct002PollIntervalSeconds
     val batteryPollIntervalSeconds: Int get() = config.batteryPollIntervalSeconds
 
@@ -115,6 +117,15 @@ class ServerHub(
     private var linkDownPushed = false
     private var meterDownPushed = false
     private var meterRecoveryTries = 0
+    // Only write when something actually changed: at a 1.7 s poll rate this used to be ~50.000
+    // pointless writes a day.
+    private var savedAutoState: AutomationState? = null
+    private var savedAlerts: List<Alert>? = null
+    private var lastHistorySaveMs = 0L
+    private var lastAutoSaveMs = 0L
+    private val pushedAlertKeys = mutableSetOf<String>()
+    /** Last capacity a battery reported; `kn / soc` is undefined at 0 %. */
+    private val lastKnownCapacity = linkedMapOf<String, Int>()
     // Settings that were sent but not yet confirmed by the device, plus the warnings about those
     // that never arrived (kept apart from the monitor alerts, which are replaced on every tick).
     private val pending = mutableListOf<PendingWrite>()
@@ -198,7 +209,10 @@ class ServerHub(
         }
         if (meterTs > 0L) lastMeterTimestampMs = meterTs
 
-        snapshot.batteries.forEach { lastBatteries[it.id] = it }
+        snapshot.batteries.forEach { b ->
+            b.capacityWh?.let { lastKnownCapacity[b.id] = it }
+            lastBatteries[b.id] = if (b.capacityWh == null) b.copy(capacityWh = lastKnownCapacity[b.id]) else b
+        }
         snapshot.meter?.let { lastMeter = it }
         lastSnapshot = snapshot
         checkReachability(nowMs)
@@ -232,8 +246,8 @@ class ServerHub(
         alerts = tick.alerts
         addEvents(tick.events, nowMs)
         notifyCalibration(prevCal, autoState.calibration, nowMs)
-        store.saveAutomation(autoState)
-        store.saveAlerts(alerts)
+        pushNewAlerts(alerts)
+        saveStateIfChanged(nowMs)
 
         // Display history: ~1 point/min, but averaged over every poll of that minute.
         accumulateHistory(snapshot)
@@ -997,7 +1011,8 @@ class ServerHub(
                     conn.connectTimeout = 8000
                     conn.readTimeout = 8000
                     conn.doOutput = true
-                    conn.setRequestProperty("Title", title)          // ASCII titles only (HTTP header)
+                    // HTTP headers are ASCII; the body below carries the full text including umlauts.
+                    conn.setRequestProperty("Title", title.filter { c -> c.code in 32..126 }.ifBlank { "Hinweis" })
                     conn.setRequestProperty("Priority", priority)
                     conn.setRequestProperty("Tags", tags)
                     conn.outputStream.use { it.write(message.toByteArray(Charsets.UTF_8)) }
@@ -1024,8 +1039,56 @@ class ServerHub(
         lastSaveMs = nowMs
         val cutoff = LocalDate.now(zone).minusDays(730).toString()
         store.saveDays(integrator.totals.values.filter { it.date >= cutoff })
-        store.saveHistory(history)
         store.saveDeviceDays(deviceDays)
+        // The history file is by far the biggest; rewriting it every minute is a lot of disk traffic
+        // for a chart. A few minutes of history is an acceptable loss after a hard kill.
+        if (nowMs - lastHistorySaveMs >= HISTORY_SAVE_MS) {
+            lastHistorySaveMs = nowMs
+            store.saveHistory(history)
+        }
+    }
+
+    /**
+     * Writes the automation state when something that matters changed, and otherwise at most once per
+     * [SAVE_INTERVAL_MS]. The bookkeeping inside it (last seen, names) moves on every single poll, so
+     * comparing the whole object would still mean writing the file all day long.
+     */
+    private fun saveStateIfChanged(nowMs: Long) {
+        val prev = savedAutoState
+        val changed = prev == null ||
+            autoState.calibration != prev.calibration ||
+            autoState.lastCalibrationFinishedMs != prev.lastCalibrationFinishedMs ||
+            autoState.balancer != prev.balancer
+        if (changed || nowMs - lastAutoSaveMs >= SAVE_INTERVAL_MS) {
+            store.saveAutomation(autoState)
+            savedAutoState = autoState
+            lastAutoSaveMs = nowMs
+        }
+        if (alerts != savedAlerts) { store.saveAlerts(alerts); savedAlerts = alerts }
+    }
+
+    /** Sends one push per newly raised warning, and allows it again once the condition cleared. */
+    private fun pushNewAlerts(list: List<Alert>) {
+        pushedAlertKeys.retainAll(list.map { it.key }.toSet())
+        for (a in list) {
+            if (a.severity == Alert.Severity.INFO) continue
+            if (!pushedAlertKeys.add(a.key)) continue
+            pushNtfy(a.title, a.message, "high", "warning")
+        }
+    }
+
+    /**
+     * Flushes everything to disk. The service is restarted nightly by the OS and by updates, and the
+     * periodic save only runs once a minute, so without this the last minute is lost every time.
+     */
+    suspend fun shutdown() = mutex.withLock {
+        val now = System.currentTimeMillis()
+        flushHistory(now)
+        lastSaveMs = 0L
+        lastHistorySaveMs = 0L
+        lastAutoSaveMs = 0L
+        persist(now)
+        saveStateIfChanged(now)
     }
 
     private fun describe(c: BatteryCommand): String {
@@ -1050,6 +1113,16 @@ class ServerHub(
             if (w <= config.selfDischargeAlertW) return@mapNotNull null
             AlertDto("selfdis-${b.id}", "WARN", "Hohe Eigenentladung",
                 "${b.name}: ~$w W Eigenentladung im Leerlauf (heute ${(idleSelfWhToday[b.id] ?: 0.0).roundToInt()} Wh) – bitte beobachten.", nowMs)
+        }
+
+    /** A battery whose depth of discharge keeps it from delivering anything is easy to overlook. */
+    private fun dodAlerts(batteries: Collection<BatteryState>, nowMs: Long): List<AlertDto> =
+        batteries.mapNotNull { b ->
+            val dod = b.dodPercent ?: return@mapNotNull null
+            if (dod >= MIN_CALIBRATION_DOD) return@mapNotNull null
+            AlertDto("dod-${b.id}", "WARN", "${b.name} gibt nichts ab",
+                "Die Entladetiefe steht auf $dod %: der Speicher behält seine Ladung und versorgt das Haus nicht. " +
+                    "Unter \"Speicher\" wieder höher stellen.", nowMs)
         }
 
     /** One info alert per battery whose measured capacity deviates enough to suggest a calibration. */
@@ -1110,6 +1183,7 @@ class ServerHub(
                     dodPercent = it.dodPercent, chargeMode = it.chargeMode.name, adaptiveMode = it.adaptiveMode,
                     dailyPvWh = it.dailyPvWh,
                     measuredCapacityWh = cal.measured, capacityDeviationPercent = cal.deviationPct, calibrationRecommended = cal.recommended,
+                    capacitySamples = capacitySamples.count { s -> s.batteryId == it.id }, capacitySamplesNeeded = CAP_MIN_SAMPLES,
                     dailyOutputWh = it.dailyOutputWh,
                     dailyChargeWh = it.dailyChargeWh, dailyInverterWh = it.dailyInverterWh,
                     deviceLossTodayWh = it.dailyOutputWh?.let { bs -> it.dailyInverterWh?.let { inv -> (bs - inv).coerceAtLeast(0) } },
@@ -1120,7 +1194,8 @@ class ServerHub(
                 )
             },
             today = today()?.let { EnergyDto.from(it, config.tariff) },
-            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + meterAlerts(nowMs) + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
+            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + meterAlerts(nowMs) +
+                dodAlerts(batteries, nowMs) + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
             lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
@@ -1164,6 +1239,7 @@ class ServerHub(
         const val METER_ALERT_MS = 600_000L           // warn after this long without meter data
         const val MIN_CALIBRATION_DOD = 10            // below this a released battery could not discharge
         const val METER_RECOVERY_TRIES = 3            // reconnect attempts per silent spell of the CT002
+        const val HISTORY_SAVE_MS = 300_000L          // the chart history is written at most this often
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median

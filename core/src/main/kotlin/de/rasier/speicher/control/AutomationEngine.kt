@@ -97,7 +97,7 @@ class AutomationEngine(private val settings: AutomationSettings, zone: ZoneId = 
         commands += bal.commands
         events += bal.events
 
-        val mon = monitor.step(s.monitor, snapshot, s.lastSeenMs, s.names, nowMs)
+        val mon = monitor.step(s.monitor, snapshot, s.lastSeenMs, s.names, nowMs, calibrating)
         s = s.copy(monitor = mon.state)
 
         return TickResult(s, commands, mon.alerts, events)

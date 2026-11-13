@@ -271,3 +271,18 @@ class AutomationScheduleTest {
     }
 }
 
+/** The monitor must not report the calibration's own doing as a fault. */
+class MonitorDuringCalibrationTest {
+    private val monitor = Monitor(MonitorSettings(conditionMinutes = 0))
+
+    @Test
+    fun `no export alarm while a calibration empties a battery on purpose`() {
+        // Manual mode pushes 800 W into a house that needs little, so power goes to the grid.
+        val snap = snapshot(0, battery(B1, out = 800), gridW = -650)
+        val normal = monitor.step(MonitorState(), snap, emptyMap(), emptyMap(), 0, calibrating = false)
+        assertTrue(normal.alerts.any { it.key == "ct:export" }, "ohne Kalibrierung muss gewarnt werden")
+        val during = monitor.step(MonitorState(), snap, emptyMap(), emptyMap(), 0, calibrating = true)
+        assertTrue(during.alerts.none { it.key == "ct:export" }, "Fehlalarm waehrend der Kalibrierung")
+    }
+}
+

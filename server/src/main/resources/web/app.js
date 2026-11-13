@@ -218,7 +218,7 @@ function renderBatteries(s) {
       ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
       ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh), "solar") : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
-      ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : ""}
+      ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}
       ${row("Firmware", b.firmware || "–")}
       ${row("Aktualisiert", ago(Date.now() - b.ageSeconds * 1000))}
@@ -858,15 +858,15 @@ document.querySelectorAll("#tabs button").forEach(btn => {
     activeTab = btn.dataset.tab;
     document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === activeTab));
-    renderActive();
+    renderActive(true);
   };
 });
-document.getElementById("refresh").onclick = refresh;
+document.getElementById("refresh").onclick = () => refresh(true);
 
-async function refresh() {
+async function refresh(force) {
   try {
     lastState = await api("state");
-    renderActive();
+    renderActive(force);
   } catch (e) { /* token prompt or transient */ }
 }
 /** True while the user is in a field or on a slider: re-rendering would reset their input. */
@@ -874,8 +874,10 @@ function isEditing() {
   const a = document.activeElement;
   return !!a && (a.tagName === "INPUT" || a.tagName === "SELECT" || a.tagName === "TEXTAREA");
 }
-function renderActive() {
-  if (!lastState || isEditing()) return;
+// force = the user asked for this (tab switch, refresh button): then it is drawn even while typing.
+function renderActive(force) {
+  if (!lastState) return;
+  if (!force && isEditing()) return;
   if (activeTab === "overview") renderOverview(lastState);
   else if (activeTab === "batteries") renderBatteries(lastState);
   else if (activeTab === "stats") renderStats();

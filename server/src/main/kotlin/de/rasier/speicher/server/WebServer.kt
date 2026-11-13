@@ -46,6 +46,14 @@ class WebServer(
             }
             val path = ex.requestURI.path.removePrefix("/api/")
             val method = ex.requestMethod
+            // A plain cross-site form POST cannot set these, so this blocks a foreign page in the
+            // browser of a device on the tailnet from driving the batteries.
+            if (method == "POST" && !writeAllowed(ex)) {
+                // Drain first: answering without reading the body can break the client's connection.
+                runCatching { ex.requestBody.readNBytes(MAX_BODY_BYTES) }
+                send(ex, 403, "application/json", """{"error":"forbidden"}""")
+                return
+            }
             when {
                 path == "state" && method == "GET" -> sendJson(ex, StateDto.serializer(), hub.state.value)
                 path == "history" && method == "GET" ->
@@ -84,6 +92,10 @@ class WebServer(
                 }
                 path == "command" && method == "POST" -> {
                     val req = json.decodeFromString(CommandRequest.serializer(), body(ex))
+                    // Commands belong to a battery; the meter shares the device list but takes none.
+                    if (req.batteryId !in hub.batteryIds) {
+                        send(ex, 400, "application/json", """{"error":"unknown battery"}"""); return
+                    }
                     val cmd = toCommand(req) ?: run { send(ex, 400, "application/json", """{"error":"bad command"}"""); return }
                     val ok = runBlocking { hub.manualCommand(cmd) }
                     send(ex, 200, "application/json", """{"ok":$ok}""")
@@ -116,6 +128,11 @@ class WebServer(
         try {
             var path = ex.requestURI.path
             if (path == "/" || path.isBlank()) path = "/index.html"
+            // Only plain file names from the bundled folder: no paths, no traversal.
+            if (!path.matches(Regex("/[A-Za-z0-9._-]+"))) {
+                send(ex, 404, "text/plain", "Not found")
+                return
+            }
             val resource = "/web$path"
             val bytes = javaClass.getResourceAsStream(resource)?.readBytes()
             if (bytes == null) {
@@ -159,7 +176,21 @@ class WebServer(
         ex.responseBody.use { it.write(body) }
     }
 
-    private fun body(ex: HttpExchange): String = ex.requestBody.readBytes().toString(StandardCharsets.UTF_8)
+    /** Reads the request body, bounded so a bad client cannot pull the server into swapping. */
+    private fun body(ex: HttpExchange): String {
+        val bytes = ex.requestBody.readNBytes(MAX_BODY_BYTES + 1)
+        require(bytes.size <= MAX_BODY_BYTES) { "Anfrage zu groß" }
+        return bytes.toString(StandardCharsets.UTF_8)
+    }
+
+    /** POSTs must look like they came from the dashboard, not from a foreign page. */
+    private fun writeAllowed(ex: HttpExchange): Boolean {
+        val type = ex.requestHeaders.getFirst("Content-Type")?.substringBefore(';')?.trim()?.lowercase()
+        if (type != "application/json") return false
+        val origin = ex.requestHeaders.getFirst("Origin") ?: return true
+        val host = ex.requestHeaders.getFirst("Host") ?: return false
+        return origin.substringAfter("://").equals(host, ignoreCase = true)
+    }
 
     private fun query(ex: HttpExchange, key: String): String? =
         ex.requestURI.query?.split("&")?.firstNotNullOfOrNull {
@@ -175,6 +206,10 @@ class WebServer(
         path.endsWith(".css") -> "text/css; charset=utf-8"
         path.endsWith(".svg") -> "image/svg+xml"
         else -> "application/octet-stream"
+    }
+
+    private companion object {
+        const val MAX_BODY_BYTES = 64 * 1024
     }
 
     private fun jsonString(s: String): String =

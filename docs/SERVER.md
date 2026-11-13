@@ -116,8 +116,24 @@ sudo journalctl -u rasier -f     # Log ansehen
 - **Keine Gerätedaten:** Stehen die Geräte in der Marstek-App online? Firmware-Stände wie erwartet?
 - **Zertifikat getauscht:** Schritt 3 mit aktuellem Image wiederholen.
 
-Der Server ist noch nicht an echten Geräten getestet (Firmware B2500 V110.9, CT002 124). Der erste
-Lauf zeigt, ob die Cloud die erwarteten Werte liefert; Abweichungen bitte melden.
+Der Server läuft an der echten Anlage (2x B2500-D Firmware 110.9, CT002 Firmware 124).
+
+## Sicherheit und bewusste Entscheidungen
+
+- **`auth_token` setzen.** Ohne Token kann jeder, der den Port erreicht, die Speicher steuern. Die
+  Oberfläche fragt den Token einmal ab und merkt ihn sich im Browser. Ohne Token ist die einzige
+  Absicherung, dass Port 8080 nur über Tailscale erreichbar ist.
+- **`time_zone`** bestimmt Tagesgrenzen, Zeitpläne und Beschriftungen. Ohne Eintrag gilt
+  Europe/Berlin – die VM selbst läuft meist auf UTC, was den Statistik-Tag sonst um ein bis zwei
+  Stunden verschöbe.
+- **Schreibende Befehle** nimmt die API nur als `application/json` und nur für bekannte Speicher an;
+  von einer fremden Webseite abgesetzte Formular-POSTs werden abgewiesen.
+- **Passwortloses `systemctl restart` und die Docker-Gruppe** für den Dienstbenutzer sind nötig,
+  damit Auto-Update und Zertifikat-Wächter ohne Zutun arbeiten. Das ist eine bewusste Abwägung für
+  ein Einpersonen-System: Wer den Dienstbenutzer übernimmt, kann den Dienst neu starten und Images
+  ziehen. Wer das nicht will, richtet beides nicht ein und aktualisiert von Hand.
+- **Das Auto-Update rollt jeden Stand des konfigurierten Branches aus.** Es prüft Tests, Build und
+  Gesundheit und rollt bei Fehlern zurück, aber es prüft nicht, *wer* den Branch geändert hat.
 
 ## Wartung automatisieren (optional, empfohlen)
 

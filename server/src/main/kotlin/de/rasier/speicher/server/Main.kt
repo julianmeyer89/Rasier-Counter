@@ -11,7 +11,10 @@ import java.io.File
 fun main(args: Array<String>) {
     val configFile = args.firstOrNull()?.let { File(it) } ?: File("config.properties")
     val config = ServerConfig.load(configFile)
-    val log: (String) -> Unit = { println("[${java.time.LocalTime.now().withNano(0)}] $it") }
+    val zone = runCatching { java.time.ZoneId.of(config.timeZone) }.getOrElse { java.time.ZoneId.of("Europe/Berlin") }
+    // Explicit pattern: LocalTime.toString() drops the seconds whenever they happen to be zero.
+    val stamp = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
+    val log: (String) -> Unit = { println("[${java.time.LocalTime.now(zone).format(stamp)}] $it") }
 
     // Diagnostic probe mode: `server <config> probe [ct002|battery] [intervalSec] [durationSec]`.
     // Measures how cleanly a given poll interval is received. Changes nothing; exits when done.
@@ -32,10 +35,7 @@ fun main(args: Array<String>) {
 
     log("Rasier Speicher Server startet (${if (config.demo) "Demo" else "Live"})")
 
-    val zone = runCatching { java.time.ZoneId.of(config.timeZone) }.getOrElse {
-        log("Zeitzone '${config.timeZone}' unbekannt, nutze Europe/Berlin.")
-        java.time.ZoneId.of("Europe/Berlin")
-    }
+    if (config.timeZone != zone.id) log("Zeitzone '${config.timeZone}' unbekannt, nutze $zone.")
     log("Zeitzone: $zone (Tagesgrenzen, Zeitpläne und Beschriftungen)")
     val link: DeviceLink = if (config.demo) SimDeviceLink(zone) else CloudDeviceLink(config, log)
     val hub = ServerHub(config, link, File(config.dataDir), zone, log)
@@ -43,12 +43,18 @@ fun main(args: Array<String>) {
 
     Runtime.getRuntime().addShutdownHook(Thread {
         log("Beende…")
+        // Save first: the periodic save only runs once a minute, and updates restart the service.
+        runCatching { runBlocking { hub.shutdown() } }
         runCatching { web.stop() }
         runCatching { link.close() }
     })
 
     web.start()
     log("Weboberfläche: http://0.0.0.0:${config.webPort}" + if (config.authToken.isNotBlank()) " (Token nötig)" else "")
+    if (config.authToken.isBlank())
+        log("Hinweis: kein auth_token gesetzt – jeder, der den Port erreicht, kann die Speicher steuern.")
+    // The effective rates come from the saved dashboard settings, not from config.properties.
+    log("Abfrage: CT002 alle ${hub.ct002PollIntervalSeconds} s, Speicher alle ${hub.batteryPollIntervalSeconds} s")
 
     runBlocking {
         var connected = false
