@@ -20,12 +20,35 @@ if ! flock -n 9; then
   exit 0
 fi
 
-web_port() { grep -E '^web_port=' "$CONFIG" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]' || true; }
-PORT="$(web_port)"; PORT="${PORT:-8080}"
+cfg() { grep -E "^$1=" "$CONFIG" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || true; }
+PORT="$(cfg web_port)"; PORT="${PORT:-8080}"
+TOKEN="$(cfg auth_token)"
 
+# Healthy means the server really works, not just that it answers. The dashboard page is served
+# straight from the jar and would answer even if the update broke the cloud link or the parsing,
+# so an update that blinds the system would otherwise count as a success.
 health_ok() {
-  # The dashboard root returns 200 once the web server is up.
-  curl -fsS -o /dev/null --max-time 10 "http://127.0.0.1:${PORT}/" 2>/dev/null
+  local json
+  if [ -n "$TOKEN" ]; then
+    json="$(curl -fsS --max-time 10 -H "X-Auth-Token: $TOKEN" "http://127.0.0.1:${PORT}/api/state" 2>/dev/null)" || return 1
+  else
+    json="$(curl -fsS --max-time 10 "http://127.0.0.1:${PORT}/api/state" 2>/dev/null)" || return 1
+  fi
+  printf '%s' "$json" | python3 -c '
+import sys, json, time
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+link = d.get("link") or {}
+if not link.get("connected"):
+    sys.exit(1)
+# Devices must actually be there, and their data must be recent.
+if not d.get("batteries"):
+    sys.exit(1)
+last = link.get("lastDataMs") or 0
+sys.exit(0 if (time.time() * 1000 - last) < 300000 else 1)
+' 2>/dev/null
 }
 
 wait_healthy() {
