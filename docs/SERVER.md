@@ -93,9 +93,10 @@ RestartSec=30
 # A clean stop leaves through SIGTERM, which exits with 143. Without this line systemd files every
 # ordinary stop (and every update) as "Failed with result 'exit-code'".
 SuccessExitStatus=143
-# The shutdown hook saves the last minute and gives up after 15 s; stay above that but well below
-# systemd's 90 s default, so a stuck save does not hold up a restart.
-TimeoutStopSec=25
+# The shutdown hook bounds its three steps itself (30 s save + 5 s web + 5 s link). This has to stay
+# above that sum, or systemd kills the process mid-save - which is what cost the last minute of data
+# on 13.11.
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target

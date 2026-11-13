@@ -116,6 +116,7 @@ class ServerHub(
     private var lastFailureEventMs = 0L
     private var lastRelinkMs = 0L
     private var linkDownPushed = false
+    private var relinkTries = 0
     private var meterDownPushed = false
     private var linkDownSinceMs = 0L  // 0 = cloud link healthy; else since when no device data arrived
     private var meterRecoveryTries = 0
@@ -224,8 +225,12 @@ class ServerHub(
             }
             linkDownSinceMs = 0L
             linkDownPushed = false
+            relinkTries = 0
         } else if (linkDownSinceMs == 0L) {
-            linkDownSinceMs = nowMs
+            // Since the data stopped, not since we noticed: the health test needs LINK_STALE_MS to
+            // elapse first, so measuring from here would put every threshold and every message that
+            // many minutes off.
+            linkDownSinceMs = dataMs ?: nowMs
         }
 
         snapshot.batteries.forEach { b ->
@@ -320,13 +325,20 @@ class ServerHub(
             starvedMs >= LINK_RELINK_MS -> "liefert seit ${starvedMs / 60_000} min keine Gerätedaten"
             else -> return
         }
-        if (nowMs - lastRelinkMs < RELINK_RETRY_MS) return
+        // Growing gap: a rebuild runs a full HTTP login against the Marstek API, and while the cloud
+        // is simply down this used to repeat every 5 minutes for as long as the outage lasted.
+        val gapMs = (RELINK_RETRY_MS * (relinkTries + 1)).coerceAtMost(RELINK_MAX_GAP_MS)
+        if (nowMs - lastRelinkMs < gapMs) return
         lastRelinkMs = nowMs
+        relinkTries++
         addEvents(listOf("Verbindung $reason – baue sie neu auf…"), nowMs)
         if (relink()) {
-            addEvents(listOf("Verbindung wiederhergestellt."), nowMs)
+            // A rebuilt connection is not flowing data yet. Only a fresh reading clears the silence
+            // (see poll), so claiming recovery here would have printed an all-clear every few minutes
+            // throughout an outage.
+            addEvents(listOf("Neu verbunden – warte auf Gerätedaten."), nowMs)
         } else {
-            addEvents(listOf("Neuaufbau fehlgeschlagen, nächster Versuch in ${RELINK_RETRY_MS / 60_000} min."), nowMs)
+            addEvents(listOf("Neuaufbau fehlgeschlagen, nächster Versuch in ${gapMs / 60_000} min."), nowMs)
             if (!linkDownPushed) {
                 linkDownPushed = true
                 pushNtfy("Verbindung gestoert", "Der Server erreicht die Marstek-Cloud nicht ($reason).", "high", "warning")
@@ -1337,9 +1349,10 @@ class ServerHub(
         const val MAX_SEND_ATTEMPTS = 4               // re-sends before a setting is reported as failed
         const val METER_FRESH_MS = 120_000L           // older CT002 readings are not shown as current
         const val METER_ALERT_MS = 600_000L           // warn after this long without meter data
-        const val LINK_STALE_MS = 300_000L            // no device data for this long = link unhealthy
+        const val LINK_STALE_MS = 120_000L            // no device data for this long = link unhealthy
+        const val LINK_RELINK_MS = 300_000L           // rebuild the link after this long without device data
         const val LINK_ALERT_MS = 600_000L            // warn after this long without any device data
-        const val LINK_RELINK_MS = 180_000L           // rebuild the link after this long without device data
+        const val RELINK_MAX_GAP_MS = 1_800_000L      // longest gap the growing rebuild backoff reaches
         const val MIN_CALIBRATION_DOD = 10            // below this a released battery could not discharge
         const val METER_RECOVERY_TRIES = 3            // reconnect attempts per silent spell of the CT002
         const val HISTORY_SAVE_MS = 300_000L          // the chart history is written at most this often

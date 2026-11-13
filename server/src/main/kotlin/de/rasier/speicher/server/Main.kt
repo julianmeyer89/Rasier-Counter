@@ -2,15 +2,31 @@ package de.rasier.speicher.server
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
  * Entry point for the VM. Reads config, connects the device link (cloud or demo), starts the web
  * server, and runs the poll loop until the process is stopped.
  */
-/** Systemd kills the process after its stop timeout; stay well inside it so the save still lands. */
-private const val SHUTDOWN_SAVE_MS = 15_000L
+// Budgets for the three shutdown steps. They have to add up to less than the unit's TimeoutStopSec
+// (60 s, see docs/SERVER.md), or systemd kills the process mid-save - which is what happened on 13.11.
+private const val SHUTDOWN_SAVE_MS = 30_000L
+private const val SHUTDOWN_WEB_MS = 5_000L
+private const val SHUTDOWN_LINK_MS = 5_000L
+
+/**
+ * Runs [step] on a daemon thread and waits at most [budgetMs] for it. A coroutine timeout cannot help
+ * here: the calls involved block without a suspension point (a disk write, or disconnecting an MQTT
+ * client that is itself stuck), so only abandoning the thread bounds them. The process is on its way
+ * out, so an abandoned thread costs nothing.
+ */
+private fun bounded(name: String, budgetMs: Long, log: (String) -> Unit, step: () -> Unit) {
+    val t = Thread({ runCatching { step() }.onFailure { log("$name beim Beenden: ${it.message}") } }, "shutdown-$name")
+        .apply { isDaemon = true }
+    t.start()
+    t.join(budgetMs)
+    if (t.isAlive) log("$name beim Beenden abgebrochen (länger als ${budgetMs / 1000} s).")
+}
 
 fun main(args: Array<String>) {
     val configFile = args.firstOrNull()?.let { File(it) } ?: File("config.properties")
@@ -48,13 +64,13 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(Thread {
         log("Beende…")
         // Save first: the periodic save only runs once a minute, and updates restart the service.
-        // Bounded, because an unbounded save blocked on a poll that was itself stuck on the cloud: on
-        // 13.11. systemd waited 90 s and then SIGKILLed the process, which lost the very minute this
-        // hook exists to save and held up the update.
-        val saved = runCatching { runBlocking { withTimeoutOrNull(SHUTDOWN_SAVE_MS) { hub.shutdown() } } }.getOrNull()
-        if (saved == null) log("Speichern beim Beenden abgebrochen (dauerte länger als ${SHUTDOWN_SAVE_MS / 1000} s).")
-        runCatching { web.stop() }
-        runCatching { link.close() }
+        // Every step is bounded. On 13.11. the hook did start - "Beende…" is in the log - and then the
+        // process still had to be SIGKILLed 90 s later, so something after that line blocked. The most
+        // likely candidate is disconnecting an MQTT client that was itself stuck, which sat outside any
+        // limit at all.
+        bounded("Speichern", SHUTDOWN_SAVE_MS, log) { runBlocking { hub.shutdown() } }
+        bounded("Weboberfläche", SHUTDOWN_WEB_MS, log) { web.stop() }
+        bounded("Cloud-Verbindung", SHUTDOWN_LINK_MS, log) { link.close() }
     })
 
     web.start()

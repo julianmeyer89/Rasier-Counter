@@ -42,16 +42,19 @@ private class DeafLink(zone: ZoneId) : DeviceLink {
 }
 
 /** Answers every poll without throwing, but reports no connection and never delivers device data. */
-private class SilentLink : DeviceLink {
+private class SilentLink(private var dataMs: Long? = null, private var up: Boolean = false) : DeviceLink {
     var connects = 0
         private set
+
+    /** Simulates data having flowed until [ms] and then stopping. */
+    fun deliveredUntil(ms: Long) { dataMs = ms; up = true }
 
     override suspend fun connect() { connects++ }
     override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) =
         de.rasier.speicher.model.SystemSnapshot(nowMs, emptyList(), null)
     override suspend fun send(command: BatteryCommand): Boolean = true
     override val batteryIds: List<String> get() = emptyList()
-    override val status: LinkStatus get() = LinkStatus(false, "kein Zertifikat", null)
+    override val status: LinkStatus get() = LinkStatus(up, "kein Zertifikat", dataMs)
     override fun close() {}
 }
 
@@ -492,6 +495,28 @@ class ServerSmallFixesTest {
         assertEquals(afterFirst, link.connects, "eine Minute Stille ist noch kein Grund")
         hub.poll(t0 + ServerHub.LINK_RELINK_MS + 1000)
         assertTrue(link.connects > afterFirst, "nach ${ServerHub.LINK_RELINK_MS / 60_000} min ohne Daten muss die Verbindung neu aufgebaut werden")
+    }
+
+    @Test
+    fun `the silence is measured from the last data, not from when it was noticed`() = runTest {
+        // The health test needs LINK_STALE_MS to pass before the link counts as unhealthy. Starting the
+        // clock at that moment put every threshold and every message that many minutes late: the rebuild
+        // would have claimed "no data for 3 min" when it had in fact been 8.
+        val dir = Files.createTempDirectory("warm").toFile()
+        val link = SilentLink()
+        val t0 = System.currentTimeMillis()
+        link.deliveredUntil(t0)
+        val hub = ServerHub(demoConfig(dir).copy(demo = false), link, dir, zone)
+        hub.poll(t0)
+        val afterFirst = link.connects
+        // Still fresh: nothing to do.
+        hub.poll(t0 + ServerHub.LINK_STALE_MS - 1000)
+        assertEquals(afterFirst, link.connects, "frische Daten sind kein Grund für einen Neuaufbau")
+        // Just past the rebuild threshold measured from the LAST DATA. Were it measured from the moment
+        // the link was first seen as unhealthy, this poll would still be short of it.
+        hub.poll(t0 + ServerHub.LINK_RELINK_MS + 1000)
+        assertTrue(link.connects > afterFirst,
+            "ab ${ServerHub.LINK_RELINK_MS / 60_000} min nach den letzten Daten muss neu aufgebaut werden")
     }
 
     @Test

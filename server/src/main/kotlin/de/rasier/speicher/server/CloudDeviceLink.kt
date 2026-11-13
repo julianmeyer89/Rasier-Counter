@@ -19,7 +19,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /**
  * Live link to the Marstek cloud over MQTT with mutual TLS. Logs in over HTTP to learn the device
@@ -52,6 +51,8 @@ class CloudDeviceLink(
     @Volatile private var lastDataMs: Long? = null
     @Volatile private var statusDetail = "nicht verbunden"
     @Volatile private var lastOutlierLogMs = 0L
+    @Volatile private var lastContradictLogMs = 0L
+    @Volatile private var receiver: Thread? = null
     @Volatile private var lastDisconnectLogMs = 0L
 
     override val batteryIds: List<String> get() = devices.filter { it.isBattery }.map { it.devid }
@@ -90,19 +91,10 @@ class CloudDeviceLink(
                     log("MQTT-Verbindung unterbrochen (${ctx.cause.message}) – automatischer Neuaufbau läuft.")
                 }
             }
-            .transportConfig()
-            // Without a timeout the blocking connect below waits forever. On 13.11. that is exactly
-            // what happened: after a restart the server hung inside connect(), logged nothing more,
-            // never polled, and stayed that way for five hours - while the web interface kept
-            // answering, so from the outside it looked alive. A failing connect has to come back as
-            // an error, because the caller already retries every 30 s.
-            .socketConnectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
-            .mqttConnectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
             .sslConfig()
             .keyManagerFactory(material.keyManagerFactory)
             .trustManagerFactory(material.trustManagerFactory)
             .applySslConfig()
-            .applyTransportConfig()
             .buildBlocking()
         // Set before connecting so the connected listener can already subscribe through it.
         client = c
@@ -135,7 +127,7 @@ class CloudDeviceLink(
                     Thread.sleep(1000)
                 }
             }
-        }, "mqtt-receiver").apply { isDaemon = true }.start()
+        }, "mqtt-receiver").apply { isDaemon = true }.also { receiver = it }.start()
 
         subscribeAll()
         log("Abonniert: ${devices.size} Geräte")
@@ -174,14 +166,16 @@ class CloudDeviceLink(
                     meter = it
                     // Reported only: the value is still used, because which side is wrong is unknown
                     // and the phase convention under export has never been seen in practice.
-                    if (it.totalContradictsPhases)
+                    if (it.totalContradictsPhases && nowMs - lastContradictLogMs > OUTLIER_LOG_MS) {
+                        lastContradictLogMs = nowMs
                         log("CT002 unplausibel: Gesamtwert ${it.totalW} W passt nicht zur Phasensumme ${it.phaseW.sum()} W, roh='${entry.first}'")
+                    }
                     // Capture the full raw frame + per-phase split for implausibly high totals, so a
                     // grid "needle" can be diagnosed (real inrush spread over phases vs. a sensor glitch
                     // on a single phase). Logged regardless of debug, but rare by nature.
-                    // Throttled, and only above a level a household does not reach in normal use: at
-                    // 3000 W a kettle and an oven were enough, and one real load wrote the same line
-                    // every 1.5 s until it filled the log the outage should have been visible in.
+                    // Throttled: one real 3 kW load used to write this same line every 1.5 s until it
+                    // filled the log the outage should have been visible in. The threshold stays where
+                    // it was, because 3-5 kW is the range the raw-frame capture exists for.
                     if (kotlin.math.abs(it.totalW) >= METER_OUTLIER_W &&
                         nowMs - lastOutlierLogMs > OUTLIER_LOG_MS) {
                         lastOutlierLogMs = nowMs
@@ -265,6 +259,11 @@ class CloudDeviceLink(
         running = false
         connected = false
         statusDetail = "nicht verbunden"
+        // Interrupt before disconnecting: the thread blocks in publishes.receive() and the flag alone
+        // never reached it, so every rebuild left a thread behind that kept writing into the same
+        // latest/lastDataMs - which made a dead link look alive.
+        receiver?.interrupt()
+        receiver = null
         runCatching { client?.disconnect() }
         client = null
     }
@@ -318,8 +317,7 @@ class CloudDeviceLink(
     companion object {
         private const val STALE_MS = 120_000L
         private const val DISCONNECT_LOG_MS = 60_000L   // do not fill the log while reconnects retry
-        private const val METER_OUTLIER_W = 5000   // log the raw CT002 frame above this |pwr_t| for diagnosis
+        private const val METER_OUTLIER_W = 3000   // log the raw CT002 frame above this |pwr_t| for diagnosis
         private const val OUTLIER_LOG_MS = 60_000L // at most one outlier frame per minute
-        private const val CONNECT_TIMEOUT_S = 20L  // give up on a connect attempt after this long
     }
 }
