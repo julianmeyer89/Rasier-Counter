@@ -607,10 +607,13 @@ class ServerHub(
      */
     private fun batteryFiveMinute(day: LocalDate): BatteryStatsDto {
         val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        // Not dayStart + 24 h: a clock change makes the day 23 or 25 hours long, and a fixed span
+        // either cuts the last hour off October's day or pulls an hour of the next day into March's.
+        val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         val slotMs = 5 * 60_000L; val slots = 288
         val ids = link.batteryIds
         val caps = ids.map { lastBatteries[it]?.capacityWh ?: 0 }
-        val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
+        val points = history.filter { it.t >= dayStart && it.t < dayEnd }.sortedBy { it.t }
         // Energy (Wh) per slot, plus covered hours per slot, so power = energy / coveredHours.
         val pvE = Array(ids.size) { DoubleArray(slots) }
         val outE = Array(ids.size) { DoubleArray(slots) }
@@ -719,9 +722,12 @@ class ServerHub(
     /** 5-minute buckets of one day (288), integrated from the power history. Labels "HH:MM". */
     private fun fiveMinuteBuckets(day: LocalDate): List<Pair<String, DailyEnergy>> {
         val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        // Not dayStart + 24 h: a clock change makes the day 23 or 25 hours long, and a fixed span
+        // either cuts the last hour off October's day or pulls an hour of the next day into March's.
+        val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         val slotMs = 5 * 60_000L
         val slots = 288
-        val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
+        val points = history.filter { it.t >= dayStart && it.t < dayEnd }.sortedBy { it.t }
         val eff = config.system.inverterEfficiency
         val cap = config.system.inverterMaxW.toDouble()
         // The same gap limit the integrator uses. With a longer one here the statistics bridge gaps
@@ -770,7 +776,10 @@ class ServerHub(
     /** Hourly buckets of one day, integrated from the power history (only available for recent days). */
     private fun hourlyBuckets(day: LocalDate): List<Pair<String, DailyEnergy>> {
         val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
-        val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
+        // Not dayStart + 24 h: a clock change makes the day 23 or 25 hours long, and a fixed span
+        // either cuts the last hour off October's day or pulls an hour of the next day into March's.
+        val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val points = history.filter { it.t >= dayStart && it.t < dayEnd }.sortedBy { it.t }
         val eff = config.system.inverterEfficiency
         val cap = config.system.inverterMaxW.toDouble()
         val maxGap = config.system.maxGapMs
