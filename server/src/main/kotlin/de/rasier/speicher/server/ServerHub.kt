@@ -98,6 +98,7 @@ class ServerHub(
     private val chargeRemainder = HashMap<String, Double>()
     private val dischargeRemainder = HashMap<String, Double>()
     private val deliveredRemainder = HashMap<String, Double>()
+    private val pvRemainder = HashMap<String, Double>()
     // Today's idle self-discharge, per battery, for the "W" estimate and anomaly alert; reset at midnight.
     private var selfDisDay = ""
     private val idleHoursToday = HashMap<String, Double>()
@@ -560,7 +561,11 @@ class ServerHub(
         val series = link.batteryIds.mapNotNull { id ->
             val byKey = recent.filter { it.batteryId == id }.groupBy(keyOf)
             if (byKey.isEmpty()) return@mapNotNull null
-            val pv = keys.map { k -> byKey[k]?.sumOf { it.pvWh } ?: 0 }
+            // Our own measurement, to match the day view, the output series and the overall solar
+            // yield — all of which are integrated live power. The device counter `pt` is only the
+            // stand-in for days recorded before that measurement existed; it reads a few percent lower,
+            // and mixing the two made the same chart jump when the bucket size changed.
+            val pv = keys.map { k -> byKey[k]?.sumOf { d -> if (d.measuredPvWh > 0) d.measuredPvWh else d.pvWh } ?: 0 }
             val output = keys.map { k -> byKey[k]?.sumOf { it.deliveredWh } ?: 0 }
             // The device counter is the energy that really reached the cells; the integral of the PV
             // surplus is only a stand-in for days (or devices) without that counter.
@@ -601,10 +606,11 @@ class ServerHub(
                 socSum[idx][slot] += s; socCnt[idx][slot]++
             }
         }
+        val maxGap = config.system.maxGapMs
         for (i in 1 until points.size) {
             val a = points[i - 1]; val b = points[i]
             val dt = b.t - a.t
-            if (dt <= 0 || dt > 10 * 60_000L) continue
+            if (dt <= 0 || dt > maxGap) continue
             val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
             val hours = dt / 3_600_000.0
             for (idx in ids.indices) {
@@ -651,6 +657,9 @@ class ServerHub(
      * buckets from the stored daily totals. The total and the meter-based total match the window.
      */
     fun stats(from: LocalDate, to: LocalDate, bucket: Bucket, label: String): StatsDto {
+        // Only used to work out how much of a day the server was actually watching, so the wall clock
+        // is good enough here - it never feeds an energy value.
+        val nowMs = System.currentTimeMillis()
         val fromMs = from.atStartOfDay(zone).toInstant().toEpochMilli()
         val toMs = to.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
 
@@ -673,8 +682,8 @@ class ServerHub(
             fromMs = fromMs,
             toMs = toMs,
             bucket = bucket.name,
-            total = EnergyDto.from(total, config.tariff),
-            buckets = buckets.map { BucketDto(it.first, EnergyDto.from(it.second, config.tariff)) },
+            total = EnergyDto.from(total, config.tariff, nowMs, zone),
+            buckets = buckets.map { BucketDto(it.first, EnergyDto.from(it.second, config.tariff, nowMs, zone)) },
             meterPeriods = inWindow.map {
                 MeterPeriodDto(it.fromMs, it.toMs, it.importKwh, it.exportKwh, it.houseKwh, it.selfConsumedKwh, it.savingsEuro(config.tariff), it.importPerWeekKwh)
             },
@@ -695,6 +704,10 @@ class ServerHub(
         val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
         val eff = config.system.inverterEfficiency
         val cap = config.system.inverterMaxW.toDouble()
+        // The same gap limit the integrator uses. With a longer one here the statistics bridge gaps
+        // that the daily totals drop, and the server reports two different solar yields for the same
+        // day - measured on the VM: 676.6 Wh in the daily total against 687.7 Wh in the hourly view.
+        val maxGap = config.system.maxGapMs
         fun label(slot: Int): String {
             val minOfDay = (slot * slotMs / 60_000L).toInt()
             return "%02d:%02d".format(minOfDay / 60, minOfDay % 60)
@@ -703,7 +716,7 @@ class ServerHub(
         for (i in 1 until points.size) {
             val a = points[i - 1]; val b = points[i]
             val dt = b.t - a.t
-            if (dt <= 0 || dt > 10 * 60_000L) continue
+            if (dt <= 0 || dt > maxGap) continue
             val slot = ((a.t - dayStart) / slotMs).toInt().coerceIn(0, slots - 1)
             val hours = dt / 3_600_000.0
             val pvW = (a.pvW + b.pvW) / 2.0
@@ -740,11 +753,12 @@ class ServerHub(
         val points = history.filter { it.t >= dayStart && it.t < dayStart + 86_400_000L }.sortedBy { it.t }
         val eff = config.system.inverterEfficiency
         val cap = config.system.inverterMaxW.toDouble()
+        val maxGap = config.system.maxGapMs
         val buckets = Array(24) { DailyEnergy(date = "%02d".format(it)) }
         for (i in 1 until points.size) {
             val a = points[i - 1]; val b = points[i]
             val dt = b.t - a.t
-            if (dt <= 0 || dt > 10 * 60_000L) continue
+            if (dt <= 0 || dt > maxGap) continue
             val hour = Instant.ofEpochMilli(a.t).atZone(zone).hour
             val hours = dt / 3_600_000.0
             val pvW = (a.pvW + b.pvW) / 2.0
@@ -917,13 +931,18 @@ class ServerHub(
                     // Real delivered energy = integral of the live output (g1/g2), NOT the device
                     // counter `bs` which also counts self-discharge.
                     val deliveredW = (a.totalOutputW + b.totalOutputW) / 2.0
+                    // The server's own PV measurement, kept next to the device counter `pt` so the
+                    // long-standing gap between the two stays visible per battery and per day.
+                    val pvW = (a.totalPvW + b.totalPvW) / 2.0
                     val cTot = (chargeRemainder[b.id] ?: 0.0) + chargeW * hours
                     val dTot = (dischargeRemainder[b.id] ?: 0.0) + dischargeW * hours
                     val vTot = (deliveredRemainder[b.id] ?: 0.0) + deliveredW * hours
-                    val cInt = cTot.toInt(); val dInt = dTot.toInt(); val vInt = vTot.toInt()
+                    val pTot = (pvRemainder[b.id] ?: 0.0) + pvW * hours
+                    val cInt = cTot.toInt(); val dInt = dTot.toInt(); val vInt = vTot.toInt(); val pInt = pTot.toInt()
                     chargeRemainder[b.id] = cTot - cInt
                     dischargeRemainder[b.id] = dTot - dInt
                     deliveredRemainder[b.id] = vTot - vInt
+                    pvRemainder[b.id] = pTot - pInt
                     // Self-discharge: SOC fell while the battery was idle (no output, no PV in either
                     // sample). That energy left the cells without being delivered — a loss, not output.
                     val idle = a.totalOutputW <= IDLE_W && b.totalOutputW <= IDLE_W && a.totalPvW <= IDLE_W && b.totalPvW <= IDLE_W
@@ -935,7 +954,7 @@ class ServerHub(
                         idleHoursToday[b.id] = (idleHoursToday[b.id] ?: 0.0) + hours
                         idleSelfWhToday[b.id] = (idleSelfWhToday[b.id] ?: 0.0) + selfWhExact
                     }
-                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, vInt, selfWh, zone)
+                    days = MeterEvaluation.addBatteryEnergy(days, b.id, snapshot.timestampMs, cInt, dInt, vInt, selfWh, zone, pInt)
                     // Measure usable capacity over clean (PV-free) discharge runs: energy out of the
                     // cells (delivered + self-discharge) divided by the SOC drop.
                     trackCapacityWindow(b, a, deliveredW * hours + selfWhExact, cap, snapshot.timestampMs)
@@ -1181,7 +1200,7 @@ class ServerHub(
                     id = it.id, name = it.name, socPercent = it.socPercent, capacityWh = it.capacityWh,
                     pvInputW = it.pvInputW, outputW = it.outputW, outputEnabled = it.outputEnabled,
                     dodPercent = it.dodPercent, chargeMode = it.chargeMode.name, adaptiveMode = it.adaptiveMode,
-                    dailyPvWh = it.dailyPvWh,
+                    dailyPvWh = it.dailyPvWh, measuredPvTodayWh = dd?.measuredPvWh,
                     measuredCapacityWh = cal.measured, capacityDeviationPercent = cal.deviationPct, calibrationRecommended = cal.recommended,
                     capacitySamples = capacitySamples.count { s -> s.batteryId == it.id }, capacitySamplesNeeded = CAP_MIN_SAMPLES,
                     dailyOutputWh = it.dailyOutputWh,
@@ -1193,7 +1212,7 @@ class ServerHub(
                     firmware = it.firmware, ageSeconds = ((nowMs - it.timestampMs) / 1000).coerceAtLeast(0),
                 )
             },
-            today = today()?.let { EnergyDto.from(it, config.tariff) },
+            today = today()?.let { EnergyDto.from(it, config.tariff, nowMs, zone) },
             alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + meterAlerts(nowMs) +
                 dodAlerts(batteries, nowMs) + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
             calibration = calibration,

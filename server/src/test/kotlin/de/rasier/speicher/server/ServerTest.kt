@@ -85,7 +85,12 @@ class ServerHubTest {
     fun `a setting the device ignores is re-sent and then reported`() = runTest {
         val dir = Files.createTempDirectory("srv").toFile()
         val link = DeafLink(zone)
-        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        // Without the balancer: the simulated batteries start 15 % apart, so it would legitimately
+        // hold one of them and its command would be counted here as a re-send.
+        val cfg = demoConfig(dir).let {
+            it.copy(automation = it.automation.copy(balancer = de.rasier.speicher.control.BalancerSettings(enabled = false)))
+        }
+        val hub = ServerHub(cfg, link, dir, zone)
         // Real wall-clock times: manualCommand stamps the command with the system clock.
         val t0 = System.currentTimeMillis()
         hub.poll(t0)
@@ -339,6 +344,29 @@ class ServerSmallFixesTest {
         hub.shutdown()
         val after = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
         assertTrue(after > before, "beim Beenden wurde der angefangene Verlauf nicht gespeichert ($before -> $after)")
+    }
+
+    @Test
+    fun `statistics drop the same gaps the daily total drops`() = runTest {
+        // The daily total skips an interval longer than maxGapMs (5 min). The statistics used to use
+        // a hard-coded 10 min, so a 7-minute gap went into the hourly and 5-minute views but not into
+        // the day's total - the server showed two different solar yields for the same day.
+        val noon = java.time.LocalDate.now(zone).atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
+        suspend fun yieldWithGap(gapMs: Long): Double {
+            val dir = Files.createTempDirectory("gap").toFile()
+            val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+            hub.poll(noon)
+            hub.poll(noon + ServerHub.HISTORY_SAMPLE_MS)
+            hub.poll(noon + ServerHub.HISTORY_SAMPLE_MS + gapMs)
+            val day = java.time.LocalDate.now(zone)
+            return hub.stats(day, day, ServerHub.Bucket.HOUR, "t").total.pvWh
+        }
+        val short = yieldWithGap(2 * 60_000L)
+        val long = yieldWithGap(7 * 60_000L)
+        assertTrue(short > 0.0, "ohne Luecke muss Ertrag gezaehlt werden (war $short)")
+        // Both runs have the same first minute; the 7-minute interval on top must not be counted.
+        assertTrue(long <= short, "die 7-Minuten-Luecke wurde in der Statistik mitgezaehlt ($long > $short)")
+        assertTrue(long < short * 1.6, "die 7-Minuten-Luecke schlaegt in der Statistik durch ($long gegen $short)")
     }
 
     @Test

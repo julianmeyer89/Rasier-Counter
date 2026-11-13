@@ -39,6 +39,12 @@ data class DeviceDay(
     val deliveredWh: Int = 0,
     /** Energy lost to self-discharge: SOC fell while the battery was idle (no output, no PV). */
     val selfDischargeWh: Int = 0,
+    /**
+     * PV energy as the server measures it: the integral of the live input power `w1`+`w2`. The device
+     * counter [pvWh] regularly comes out a few percent lower, so both are kept side by side instead of
+     * one being silently preferred — the gap between them is a measurement, not an error to hide.
+     */
+    val measuredPvWh: Int = 0,
 )
 
 /** Evaluation of the period between two meter readings. Energy in kWh. */
@@ -98,6 +104,7 @@ object MeterEvaluation {
             dischargeWh = existing?.dischargeWh ?: 0,
             deliveredWh = existing?.deliveredWh ?: 0,
             selfDischargeWh = existing?.selfDischargeWh ?: 0,
+            measuredPvWh = existing?.measuredPvWh ?: 0,
         )
         return days.filterNot { it.date == date && it.batteryId == batteryId } + updated
     }
@@ -112,8 +119,9 @@ object MeterEvaluation {
         deliveredWh: Int,
         selfDischargeWh: Int,
         zone: ZoneId,
+        measuredPvWh: Int = 0,
     ): List<DeviceDay> {
-        if (chargeWh == 0 && dischargeWh == 0 && deliveredWh == 0 && selfDischargeWh == 0) return days
+        if (chargeWh == 0 && dischargeWh == 0 && deliveredWh == 0 && selfDischargeWh == 0 && measuredPvWh == 0) return days
         val date = Instant.ofEpochMilli(timestampMs).atZone(zone).toLocalDate().toString()
         val existing = days.firstOrNull { it.date == date && it.batteryId == batteryId }
         val updated = (existing ?: DeviceDay(date = date, batteryId = batteryId)).let {
@@ -122,6 +130,7 @@ object MeterEvaluation {
                 dischargeWh = it.dischargeWh + dischargeWh,
                 deliveredWh = it.deliveredWh + deliveredWh,
                 selfDischargeWh = it.selfDischargeWh + selfDischargeWh,
+                measuredPvWh = it.measuredPvWh + measuredPvWh,
                 lastSeenMs = timestampMs,
             )
         }

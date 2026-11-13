@@ -59,6 +59,27 @@ class MeterReadingsTest {
     }
 
     @Test
+    fun `measured PV accumulates per day and does not disturb the device counter`() {
+        val zone = ZoneId.of("Europe/Berlin")
+        var days = emptyList<DeviceDay>()
+        // The device reports its own day counter twice; only the highest reading is kept.
+        days = MeterEvaluation.updateDeviceDays(days, "B1", at("2026-11-12", 12), pvWh = 200, outputWh = 0, zone = zone)
+        days = MeterEvaluation.updateDeviceDays(days, "B1", at("2026-11-12", 20), pvWh = 316, outputWh = 0, zone = zone)
+        // Our own measurement is integrated in small steps and adds up.
+        days = MeterEvaluation.addBatteryEnergy(days, "B1", at("2026-11-12", 12), 0, 0, 0, 0, zone, measuredPvWh = 150)
+        days = MeterEvaluation.addBatteryEnergy(days, "B1", at("2026-11-12", 20), 0, 0, 0, 0, zone, measuredPvWh = 193)
+        val d = days.single { it.batteryId == "B1" && it.date == "2026-11-12" }
+        assertEquals(316, d.pvWh)
+        assertEquals(343, d.measuredPvWh)
+        // A later device reading must not wipe the accumulated measurement.
+        days = MeterEvaluation.updateDeviceDays(days, "B1", at("2026-11-12", 23), pvWh = 316, outputWh = 10, zone = zone)
+        assertEquals(343, days.single { it.batteryId == "B1" && it.date == "2026-11-12" }.measuredPvWh)
+        // The next day starts over.
+        days = MeterEvaluation.addBatteryEnergy(days, "B1", at("2026-11-13", 12), 0, 0, 0, 0, zone, measuredPvWh = 40)
+        assertEquals(40, days.single { it.batteryId == "B1" && it.date == "2026-11-13" }.measuredPvWh)
+    }
+
+    @Test
     fun `without battery data only grid values are shown`() {
         val entries = listOf(MeterEntry(at("2026-11-01", 10), 100.0), MeterEntry(at("2026-11-04", 10), 115.5))
         val p = MeterEvaluation.periods(entries, emptyList(), 0.95, zone).single()

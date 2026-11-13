@@ -198,6 +198,26 @@ class BalancerTest {
     }
 
     @Test
+    fun `the hold itself does not look like charging`() {
+        // Holding the battery is exactly what stops its output. Judged by "PV above output" the
+        // battery would look like it had started charging the moment the hold took effect, and the
+        // balancer released it one poll later - two writes to the device for nothing.
+        val s1 = balancer.step(BalancerState(), listOf(battery(B1, soc = 30, pv = 400, out = 500, dod = 90), battery(B2, soc = 60, out = 500)), HOUR, paused = false)
+        assertEquals(listOf<BatteryCommand>(BatteryCommand.SetDod(B1, 70)), s1.commands)
+        assertEquals(30, s1.state.heldSocPercent)
+
+        // Output now zero because of the hold, PV unchanged, SOC unchanged: no release.
+        val s2 = balancer.step(s1.state, listOf(battery(B1, soc = 30, pv = 400, out = 0, dod = 70), battery(B2, soc = 55, out = 900)), HOUR + MIN, paused = false)
+        assertTrue(s2.commands.isEmpty(), "Halten darf sich nicht selbst beenden")
+        assertEquals(B1, s2.state.heldBatteryId)
+
+        // A SOC that really climbs does end the hold.
+        val s3 = balancer.step(s2.state, listOf(battery(B1, soc = 32, pv = 400, out = 0, dod = 70), battery(B2, soc = 50, out = 900)), HOUR + 2 * MIN, paused = false)
+        assertEquals(listOf<BatteryCommand>(BatteryCommand.SetDod(B1, 90)), s3.commands)
+        assertNull(s3.state.heldBatteryId)
+    }
+
+    @Test
     fun `releases when paused`() {
         val held = BalancerState(heldBatteryId = B1, originalDod = 90, lastWriteMs = 0)
         val s = balancer.step(held, listOf(battery(B1, soc = 30, dod = 70), battery(B2, soc = 60)), MIN, paused = true)

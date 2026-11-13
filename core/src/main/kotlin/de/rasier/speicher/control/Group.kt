@@ -42,6 +42,8 @@ data class BalancerState(
     val heldBatteryId: String? = null,
     val originalDod: Int? = null,
     val lastWriteMs: Long = 0,
+    /** SOC of the held battery when the hold began, to tell real charging from the hold's own effect. */
+    val heldSocPercent: Int? = null,
 )
 
 data class BalancerStep(val state: BalancerState, val commands: List<BatteryCommand>, val events: List<String>)
@@ -68,7 +70,11 @@ class SocBalancer(private val settings: BalancerSettings = BalancerSettings()) {
                 batteries.size < 2 -> "nur ein Speicher erreichbar"
                 (others.maxOfOrNull { it.socPercent } ?: 0) - heldBattery.socPercent <= settings.stopSpreadPercent -> "Ladestände ausgeglichen"
                 others.all { o -> o.floorSocPercent?.let { o.socPercent <= it + 5 } ?: false } -> "anderer Speicher fast leer"
-                heldBattery.totalPvW > heldBattery.totalOutputW + 50 -> "Speicher lädt wieder"
+                // Not "PV above output": holding the battery is what drives its output to zero, so
+                // that test is satisfied by the hold itself. It released the battery again on the very
+                // next poll - two writes to the device's flash for nothing. A rising SOC cannot be
+                // caused by the hold, so it is the honest signal that the battery really is charging.
+                state.heldSocPercent?.let { heldBattery.socPercent > it } == true -> "Speicher lädt wieder"
                 else -> null
             }
             if (releaseReason != null && state.originalDod != null) {
@@ -95,7 +101,7 @@ class SocBalancer(private val settings: BalancerSettings = BalancerSettings()) {
         val holdDod = (100 - low.socPercent).coerceIn(0, lowDod)
         if (holdDod >= lowDod) return BalancerStep(state, emptyList(), emptyList())
         return BalancerStep(
-            BalancerState(heldBatteryId = low.id, originalDod = lowDod, lastWriteMs = nowMs),
+            BalancerState(heldBatteryId = low.id, originalDod = lowDod, lastWriteMs = nowMs, heldSocPercent = low.socPercent),
             listOf(BatteryCommand.SetDod(low.id, holdDod)),
             listOf("Ausgleich: ${low.name} (${low.socPercent} %) pausiert, ${high.name} (${high.socPercent} %) übernimmt"),
         )

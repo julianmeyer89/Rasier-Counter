@@ -51,6 +51,14 @@ function subRow(label, value, cls) {
 }
 function subhead(text) { return `<div class="subhead">${text}</div>`; }
 
+// Our PV measurement runs a few percent above the device's own day counter. Showing the gap makes it
+// a number that can be watched instead of two values that quietly disagree.
+function pvGap(b) {
+  if (b.measuredPvTodayWh == null || !b.dailyPvWh || b.measuredPvTodayWh < 50) return "";
+  const pct = Math.round((b.measuredPvTodayWh / b.dailyPvWh - 1) * 100);
+  return pct === 0 ? "" : ` (gemessen ${pct > 0 ? "+" : ""}${pct} %)`;
+}
+
 // Card header with an "i" button that opens the explanation window.
 function cardHead(title) {
   return `<div class="cardhead"><h2>${title}</h2><button class="infobtn" onclick="openInfo()" title="Erklärung">i</button></div>`;
@@ -60,7 +68,7 @@ const VALUE_INFO = `
 <p class="note">Ohne DTU sind einige Werte geschätzt. Die exakten Netzwerte stehen in „Zählerbasiert“, sobald zwei Ablesungen vorliegen.</p>
 <p class="note">Die Werte sind gruppiert in <b>Verbrauch</b> (was das Haus braucht) und <b>Erzeugung</b> (was die Solaranlage liefert).</p>
 <p class="note"><b>Grundlage:</b> Wechselrichter-Abgabe = Speicherabgabe × Wirkungsgrad (höchstens die WR-Maximalleistung). Daraus folgen die übrigen Werte:</p>
-<p class="note"><b>Zwei Quellen für den Solarertrag:</b> Der <b>Solarertrag</b> hier ist unsere eigene Messung – die PV-Leistung wird laufend abgefragt und aufsummiert. Das <b>„PV heute (Gerätezähler)"</b> im Speicher-Block ist dagegen der Tageszähler des Speichers selbst. Beide sind richtig, zählen aber nicht dasselbe: In der Praxis liegt unsere Messung etwa 5 bis 8 % höher. Die beiden Gerätezähler ergeben zusammen deshalb <i>nicht</i> genau den Solarertrag.</p>
+<p class="note"><b>Zwei Quellen für den Solarertrag:</b> Der <b>Solarertrag</b> hier ist unsere eigene Messung – die PV-Leistung wird laufend abgefragt und aufsummiert. Im Speicher-Block stehen beide Zahlen direkt untereinander: <b>„PV heute (gemessen)"</b> ist dieselbe Messung für diesen einen Speicher, <b>„Gerätezähler"</b> der Tageszähler des Speichers selbst, und der Prozentwert daneben der aktuelle Abstand. Unsere Messung liegt regelmäßig etwa 5 bis 8 % höher. Beide Zahlen sind plausibel, sie zählen nur an verschiedenen Stellen – die naheliegende Erklärung ist, dass der Speicher erst hinter seinem Laderegler zählt. Die beiden Gerätezähler ergeben zusammen deshalb <i>nicht</i> genau den Solarertrag.</p>
 <table class="info-table">
   <tr><th>Wert</th><th>Berechnung</th></tr>
   <tr><td>Hausverbrauch</td><td>= „davon Solar“ + „aus dem Netz“</td></tr>
@@ -176,7 +184,8 @@ function renderOverview(s) {
       ${row("Solarertrag", KWH(t.pvWh), "solar")}
       ${row("Einspeisung", KWH(t.gridExportWh), "export")}
       ${row("Autarkie", PCT(t.autarkyPercent))}
-      ${t.meterCoveragePercent != null && t.meterCoveragePercent < 99 ? `<div class="note">Netz, Haus und Autarkie decken nur ${Math.round(t.meterCoveragePercent)} % des Tages ab – in der übrigen Zeit fehlten Zählerdaten.</div>` : ""}
+      ${t.dayCoveragePercent != null && t.dayCoveragePercent < 95 ? `<div class="note warn">Der Server hat von diesem Tag nur ${Math.round(t.dayCoveragePercent)} % mitbekommen – alle Werte zählen nur diesen Teil. Lief der Server erst ab dem Abend, steht der Solarertrag zu Recht auf 0, obwohl tagsüber die Sonne schien.</div>` : ""}
+      ${t.meterCoveragePercent != null && t.meterCoveragePercent < 99 ? `<div class="note">Netz, Haus und Autarkie decken nur ${Math.round(t.meterCoveragePercent)} % der beobachteten Zeit ab – in der übrigen fehlten Zählerdaten.</div>` : ""}
     </div>`;
   }
   html += `<div class="card"><h2>24 Stunden</h2><canvas id="histChart"></canvas>
@@ -217,7 +226,8 @@ function renderBatteries(s) {
       ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
       ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
-      ${b.dailyPvWh != null ? row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar") : ""}
+      ${b.measuredPvTodayWh != null ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
+      ${b.dailyPvWh != null ? (b.measuredPvTodayWh != null ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
       ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}

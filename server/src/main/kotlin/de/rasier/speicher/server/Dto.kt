@@ -61,6 +61,8 @@ data class BatteryDto(
     val chargeMode: String,
     val adaptiveMode: Boolean?,
     val dailyPvWh: Int?,
+    /** PV today as the server measures it (integral of w1+w2), next to the device counter [dailyPvWh]. */
+    val measuredPvTodayWh: Int? = null,
     /** Measured usable capacity from clean discharges (Wh), its deviation from the device's claim (%),
      *  and whether that deviation suggests a calibration. */
     val measuredCapacityWh: Int? = null,
@@ -103,14 +105,28 @@ data class EnergyDto(
     /** Share of the observed time that had meter data (0-100). Below 100 the grid-based values
      *  (import, house, autarky, savings) only cover part of the period. */
     val meterCoveragePercent: Double? = null,
+    /** Share of the day itself that was observed at all (0-100), for days the server only saw part of.
+     *  Without it a day the server watched for two evening hours reports a solar yield of 0 and a grid
+     *  import that looks like a whole day's worth, with nothing on screen saying so. */
+    val dayCoveragePercent: Double? = null,
 ) {
     companion object {
-        fun from(d: DailyEnergy, t: Tariff) = EnergyDto(
+        fun from(d: DailyEnergy, t: Tariff, nowMs: Long? = null, zone: java.time.ZoneId? = null) = EnergyDto(
             date = d.date, pvWh = d.pvWh, houseWh = d.houseWh, selfConsumedWh = d.selfConsumedWh,
             gridImportWh = d.gridImportWh, gridExportWh = d.gridExportWh, batteryOutputWh = d.batteryOutputWh,
             autarkyPercent = d.autarky?.times(100), savingsEuro = d.savingsEuro(t), gridCostEuro = d.gridCostEuro(t),
             meterCoveragePercent = if (d.batteryCoverageMs > 0) d.meterCoverageMs * 100.0 / d.batteryCoverageMs else null,
+            dayCoveragePercent = dayCoverage(d, nowMs, zone),
         )
+
+        /** Only for a single calendar day ([DailyEnergy.date] is an ISO date); null for other buckets. */
+        private fun dayCoverage(d: DailyEnergy, nowMs: Long?, zone: java.time.ZoneId?): Double? {
+            if (nowMs == null || zone == null || d.batteryCoverageMs <= 0) return null
+            val day = try { java.time.LocalDate.parse(d.date) } catch (_: Exception) { return null }
+            val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
+            val elapsed = (nowMs - start).coerceAtMost(86_400_000L)
+            return if (elapsed > 0) (d.batteryCoverageMs * 100.0 / elapsed).coerceAtMost(100.0) else null
+        }
     }
 }
 
