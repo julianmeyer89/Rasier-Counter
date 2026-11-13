@@ -277,6 +277,7 @@ class ServerHub(
         persist(nowMs)
         rebuild(nowMs)
         recoverMeterIfStuck(nowMs)
+        relinkIfDead(nowMs)
     }
 
     /**
@@ -309,17 +310,26 @@ class ServerHub(
      * self-heal, which leaves the link closed) would silence the server until a manual restart.
      */
     private suspend fun relinkIfDead(nowMs: Long) {
-        if (pollFailures < RELINK_AFTER_FAILURES) return
+        // Two separate reasons, because the second one went unhandled for five hours: polls that throw,
+        // and polls that succeed while no device data arrives at all. The link can report itself alive
+        // and deliver nothing - a rejected session, a rotated certificate - and in that state neither
+        // this nor recoverMeterIfStuck used to fire (the latter needs batteries to be reporting).
+        val starvedMs = if (linkDownSinceMs == 0L) 0L else nowMs - linkDownSinceMs
+        val reason = when {
+            pollFailures >= RELINK_AFTER_FAILURES -> "antwortet seit $pollFailures Abfragen nicht"
+            starvedMs >= LINK_RELINK_MS -> "liefert seit ${starvedMs / 60_000} min keine Gerätedaten"
+            else -> return
+        }
         if (nowMs - lastRelinkMs < RELINK_RETRY_MS) return
         lastRelinkMs = nowMs
-        addEvents(listOf("Verbindung antwortet seit $pollFailures Abfragen nicht – baue sie neu auf…"), nowMs)
+        addEvents(listOf("Verbindung $reason – baue sie neu auf…"), nowMs)
         if (relink()) {
             addEvents(listOf("Verbindung wiederhergestellt."), nowMs)
         } else {
             addEvents(listOf("Neuaufbau fehlgeschlagen, nächster Versuch in ${RELINK_RETRY_MS / 60_000} min."), nowMs)
             if (!linkDownPushed) {
                 linkDownPushed = true
-                pushNtfy("Verbindung gestoert", "Der Server erreicht die Marstek-Cloud seit $pollFailures Abfragen nicht.", "high", "warning")
+                pushNtfy("Verbindung gestoert", "Der Server erreicht die Marstek-Cloud nicht ($reason).", "high", "warning")
             }
         }
         rebuild(nowMs)
@@ -1329,6 +1339,7 @@ class ServerHub(
         const val METER_ALERT_MS = 600_000L           // warn after this long without meter data
         const val LINK_STALE_MS = 300_000L            // no device data for this long = link unhealthy
         const val LINK_ALERT_MS = 600_000L            // warn after this long without any device data
+        const val LINK_RELINK_MS = 180_000L           // rebuild the link after this long without device data
         const val MIN_CALIBRATION_DOD = 10            // below this a released battery could not discharge
         const val METER_RECOVERY_TRIES = 3            // reconnect attempts per silent spell of the CT002
         const val HISTORY_SAVE_MS = 300_000L          // the chart history is written at most this often

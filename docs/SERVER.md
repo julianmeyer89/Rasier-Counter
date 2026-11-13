@@ -90,6 +90,12 @@ WorkingDirectory=/home/ubuntu/rasier
 ExecStart=/home/ubuntu/rasier/src/server/build/install/server/bin/server /home/ubuntu/rasier/config.properties
 Restart=always
 RestartSec=30
+# A clean stop leaves through SIGTERM, which exits with 143. Without this line systemd files every
+# ordinary stop (and every update) as "Failed with result 'exit-code'".
+SuccessExitStatus=143
+# The shutdown hook saves the last minute and gives up after 15 s; stay above that but well below
+# systemd's 90 s default, so a stuck save does not hold up a restart.
+TimeoutStopSec=25
 
 [Install]
 WantedBy=multi-user.target

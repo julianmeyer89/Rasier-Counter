@@ -2,12 +2,16 @@ package de.rasier.speicher.server
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
  * Entry point for the VM. Reads config, connects the device link (cloud or demo), starts the web
  * server, and runs the poll loop until the process is stopped.
  */
+/** Systemd kills the process after its stop timeout; stay well inside it so the save still lands. */
+private const val SHUTDOWN_SAVE_MS = 15_000L
+
 fun main(args: Array<String>) {
     val configFile = args.firstOrNull()?.let { File(it) } ?: File("config.properties")
     val config = ServerConfig.load(configFile)
@@ -44,7 +48,11 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(Thread {
         log("Beende…")
         // Save first: the periodic save only runs once a minute, and updates restart the service.
-        runCatching { runBlocking { hub.shutdown() } }
+        // Bounded, because an unbounded save blocked on a poll that was itself stuck on the cloud: on
+        // 13.11. systemd waited 90 s and then SIGKILLed the process, which lost the very minute this
+        // hook exists to save and held up the update.
+        val saved = runCatching { runBlocking { withTimeoutOrNull(SHUTDOWN_SAVE_MS) { hub.shutdown() } } }.getOrNull()
+        if (saved == null) log("Speichern beim Beenden abgebrochen (dauerte länger als ${SHUTDOWN_SAVE_MS / 1000} s).")
         runCatching { web.stop() }
         runCatching { link.close() }
     })

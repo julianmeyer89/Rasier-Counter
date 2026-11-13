@@ -43,7 +43,10 @@ private class DeafLink(zone: ZoneId) : DeviceLink {
 
 /** Answers every poll without throwing, but reports no connection and never delivers device data. */
 private class SilentLink : DeviceLink {
-    override suspend fun connect() {}
+    var connects = 0
+        private set
+
+    override suspend fun connect() { connects++ }
     override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) =
         de.rasier.speicher.model.SystemSnapshot(nowMs, emptyList(), null)
     override suspend fun send(command: BatteryCommand): Boolean = true
@@ -472,6 +475,23 @@ class ServerSmallFixesTest {
         val a = hub.state.value.alerts.firstOrNull { it.key == "link-down" }
         assertTrue(a != null, "nach der Schwelle muss gewarnt werden")
         assertTrue(a!!.message.contains("Minuten"), "die Warnung soll sagen, seit wann: ${a.message}")
+    }
+
+    @Test
+    fun `a link that delivers nothing is rebuilt without a single failed poll`() = runTest {
+        // The outage of 13.11. in one sentence: the polls never threw, so pollFailures stayed 0, and
+        // the only self-heal keyed on thrown polls. recoverMeterIfStuck could not help either, because
+        // it requires the batteries to be reporting. Nothing rebuilt the link for five hours.
+        val dir = Files.createTempDirectory("starve").toFile()
+        val link = SilentLink()
+        val hub = ServerHub(demoConfig(dir).copy(demo = false), link, dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        val afterFirst = link.connects
+        hub.poll(t0 + 60_000L)
+        assertEquals(afterFirst, link.connects, "eine Minute Stille ist noch kein Grund")
+        hub.poll(t0 + ServerHub.LINK_RELINK_MS + 1000)
+        assertTrue(link.connects > afterFirst, "nach ${ServerHub.LINK_RELINK_MS / 60_000} min ohne Daten muss die Verbindung neu aufgebaut werden")
     }
 
     @Test
