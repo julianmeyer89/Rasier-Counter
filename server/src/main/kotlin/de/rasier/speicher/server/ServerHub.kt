@@ -560,7 +560,8 @@ class ServerHub(
         if (d.measuredPvMs <= 0) return false
         val day = try { LocalDate.parse(d.date) } catch (_: Exception) { return false }
         val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
-        val elapsed = (nowMs - start).coerceAtMost(86_400_000L)
+        val dayMs = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - start
+        val elapsed = (nowMs - start).coerceAtMost(dayMs)
         return elapsed > 0 && d.measuredPvMs * 100.0 / elapsed >= MIN_MEASURED_COVERAGE
     }
 
@@ -582,10 +583,13 @@ class ServerHub(
             // anything at all" instead would drop the day an update was deployed from 318 Wh to 1 Wh
             // and leave it there.
             val pv = keys.map { k -> byKey[k]?.sumOf { d -> if (measuredCoversDay(d, nowMs)) d.measuredPvWh else d.pvWh } ?: 0 }
-            val output = keys.map { k -> byKey[k]?.sumOf { it.deliveredWh } ?: 0 }
-            // The device counter is the energy that really reached the cells; the integral of the PV
-            // surplus is only a stand-in for days (or devices) without that counter.
-            val charge = keys.map { k -> byKey[k]?.sumOf { d -> if (d.deviceChargeWh > 0) d.deviceChargeWh else d.chargeWh } ?: 0 }
+            // Output and charge follow the same rule as PV, each with the device counter that measures
+            // the same thing: `it` (to the inverter) against our integrated output, `bc` (into the cells)
+            // against our integrated PV surplus. Before this, charge preferred the device counter
+            // whenever it existed while the day view integrated, so the same day read 344 Wh in the day
+            // view and 138 Wh in the week view - the very thing this chart was supposed to stop doing.
+            val output = keys.map { k -> byKey[k]?.sumOf { d -> if (measuredCoversDay(d, nowMs)) d.deliveredWh else d.deviceInverterWh } ?: 0 }
+            val charge = keys.map { k -> byKey[k]?.sumOf { d -> if (measuredCoversDay(d, nowMs)) d.chargeWh else if (d.deviceChargeWh > 0) d.deviceChargeWh else d.chargeWh } ?: 0 }
             val self = keys.map { k -> byKey[k]?.sumOf { it.selfDischargeWh } ?: 0 }
             BatterySeriesDto(
                 id = id, name = batteryName(id), pv = pv, output = output, charge = charge, selfDischarge = self,
@@ -1256,8 +1260,12 @@ class ServerHub(
         const val HISTORY_MS = 8 * 24 * 3_600_000L
         const val MAX_HISTORY = 12_000
         const val HISTORY_SAMPLE_MS = 60_000L
-        /** Percent of a day our own measurement must cover before it is preferred over the device counter. */
-        const val MIN_MEASURED_COVERAGE = 95.0
+        /**
+         * Percent of a day our own measurement must cover before it is preferred over the device counter.
+         * 95 would let a missing midday hour through, which can be a third of a November day's solar
+         * yield; normal operation reaches ~100 % and a restart for an update costs about a minute.
+         */
+        const val MIN_MEASURED_COVERAGE = 99.0
         const val MAX_EVENTS = 500
         const val SAVE_INTERVAL_MS = 60_000L
         const val DAY_MS = 86_400_000L

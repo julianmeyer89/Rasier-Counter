@@ -53,6 +53,10 @@ function subhead(text) { return `<div class="subhead">${text}</div>`; }
 
 // Our PV measurement runs a few percent above the device's own day counter. Showing the gap makes it
 // a number that can be watched instead of two values that quietly disagree.
+// Below 10 Wh the measurement still prints as "0,00 kWh", which makes a worse headline than the
+// device counter it would be sitting above.
+function hasMeasuredPv(b) { return b.measuredPvTodayWh != null && b.measuredPvTodayWh >= 10; }
+
 function pvGap(b) {
   if (b.measuredPvTodayWh == null || !b.dailyPvWh || b.measuredPvTodayWh < 50) return "";
   const pct = Math.round((b.measuredPvTodayWh / b.dailyPvWh - 1) * 100);
@@ -226,8 +230,8 @@ function renderBatteries(s) {
       ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
       ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
-      ${b.measuredPvTodayWh ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
-      ${b.dailyPvWh != null ? (b.measuredPvTodayWh ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
+      ${hasMeasuredPv(b) ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
+      ${b.dailyPvWh != null ? (hasMeasuredPv(b) ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
       ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}
@@ -343,7 +347,7 @@ function renderBatChips() {
   const wbox = document.getElementById("batWho"), bats = batData?.series || [];
   if (wbox) wbox.innerHTML = bats.length <= 1 ? "" : bats.map(b => {
     const on = !batHidden.has(b.id);
-    return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBat('${b.id}')">${b.name}</button>`;
+    return `<button class="chip ${on ? "on" : ""}" style="${on ? "--c:#888" : ""}" onclick="toggleBat('${b.id}')">${esc(b.name)}</button>`;
   }).join("");
 }
 function renderBatSum(vis) {
@@ -372,11 +376,11 @@ function drawBatteryChart() {
     if (batHidden.has(b.id)) return;
     BAT_METRICS.forEach((m, mi) => {
       if (!batMetrics.has(m.key)) return;
-      left.push({ label: `${b.name} ${m.label}`, values: b[m.field] || [], color: BAT_PALETTE[(bi * BAT_METRICS.length + mi) % BAT_PALETTE.length] });
+      left.push({ label: `${esc(b.name)} ${m.label}`, values: b[m.field] || [], color: BAT_PALETTE[(bi * BAT_METRICS.length + mi) % BAT_PALETTE.length] });
     });
   });
   const socSeries = !batSoc ? [] : allBats.map((b, bi) => ({ b, bi })).filter(x => !batHidden.has(x.b.id)).map(({ b, bi }) =>
-    ({ name: b.name, color: SOC_COLORS[bi % SOC_COLORS.length], points: labels.map((_, j) => [j, (b.soc || [])[j]]).filter(p => p[1] != null && p[1] >= 0) })).filter(s => s.points.length);
+    ({ name: esc(b.name), color: SOC_COLORS[bi % SOC_COLORS.length], points: labels.map((_, j) => [j, (b.soc || [])[j]]).filter(p => p[1] != null && p[1] >= 0) })).filter(s => s.points.length);
   const slider = document.getElementById("batSlider"), ro = document.getElementById("batReadout");
   if (!labels.length || (!left.length && !socSeries.length)) {
     if (slider) slider.max = 0;
@@ -565,6 +569,11 @@ async function renderStats() {
     <div class="big"><span class="v import">${EUR(t.gridCostEuro)}</span><span class="l">Netzkosten</span></div>
     <div class="big"><span class="v">${PCT(t.autarkyPercent)}</span><span class="l">Autarkie</span></div></div></div>`;
 
+  const thin = s.buckets.filter(b => b.energy.dayCoveragePercent != null && b.energy.dayCoveragePercent < 99);
+  if (thin.length) html += `<div class="card"><div class="note warn">Unvollständige Tage in diesem Zeitraum: ${thin
+    .map(b => `${esc(b.label)} (${b.energy.dayCoveragePercent < 1 ? "unter 1" : Math.round(b.energy.dayCoveragePercent)} %)`)
+    .join(", ")}. Dort lagen nur zeitweise Speicherdaten vor – Solarertrag und Speicherwerte zählen nur diesen Teil, der Netzbezug kann trotzdem nach einem ganzen Tag aussehen.</div></div>`;
+
   if (s.meterTotal) {
     const m = s.meterTotal;
     html += `<div class="card"><h2>Zählerbasiert (exakt)</h2>
@@ -650,7 +659,7 @@ async function renderCalibration() {
     html += `<div>${c ? "Letzte: " + c.phase : "Noch keine Kalibrierung."}</div>`;
     if (c && c.lastFinishedMs) html += row("Zuletzt", ago(c.lastFinishedMs));
     html += `<div style="height:8px"></div><button class="primary" onclick="calStart([])">Alle kalibrieren</button>`;
-    for (const b of s.batteries) html += `<button class="sec" onclick="calStart(['${b.id}'])">${b.name}</button>`;
+    for (const b of s.batteries) html += `<button class="sec" onclick="calStart(['${b.id}'])">${esc(b.name)}</button>`;
   } else {
     html += row("Schritt", c.phase) + row("Fortschritt", (c.index + 1) + " von " + c.total) + row("Gestartet", ago(c.startedMs));
     html += `<div style="height:8px"></div><button class="sec" onclick="calAbort()">Abbrechen</button>`;

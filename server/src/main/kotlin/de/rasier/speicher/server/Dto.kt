@@ -121,10 +121,16 @@ data class EnergyDto(
 
         /** Only for a single calendar day ([DailyEnergy.date] is an ISO date); null for other buckets. */
         private fun dayCoverage(d: DailyEnergy, nowMs: Long?, zone: java.time.ZoneId?): Double? {
-            if (nowMs == null || zone == null || d.batteryCoverageMs <= 0) return null
+            // Deliberately NOT guarded by batteryCoverageMs > 0: a day with no battery data at all is
+            // exactly the day this warning exists for. Guarding on it switched the warning off in the
+            // worst case and left a solar yield of 0 standing next to a full day's grid import.
+            if (nowMs == null || zone == null) return null
             val day = try { java.time.LocalDate.parse(d.date) } catch (_: Exception) { return null }
             val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
-            val elapsed = (nowMs - start).coerceAtMost(86_400_000L)
+            // The real length of this day: a clock change makes it 23 or 25 hours, and a fixed 24 would
+            // report a fully observed March day as 96 % covered.
+            val dayMs = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - start
+            val elapsed = (nowMs - start).coerceAtMost(dayMs)
             return if (elapsed > 0) (d.batteryCoverageMs * 100.0 / elapsed).coerceAtMost(100.0) else null
         }
     }

@@ -400,14 +400,51 @@ class ServerSmallFixesTest {
         val full = java.time.LocalDate.now(zone).minusDays(2).toString()
         val part = java.time.LocalDate.now(zone).minusDays(1).toString()
         de.rasier.speicher.settings.FileStore(dir).saveDeviceDays(listOf(
-            de.rasier.speicher.energy.DeviceDay(date = full, batteryId = id, pvWh = 316, measuredPvWh = 343, measuredPvMs = 86_400_000L),
-            de.rasier.speicher.energy.DeviceDay(date = part, batteryId = id, pvWh = 318, measuredPvWh = 7, measuredPvMs = 20_000_000L),
+            de.rasier.speicher.energy.DeviceDay(
+                date = full, batteryId = id, pvWh = 316, measuredPvWh = 343, measuredPvMs = 86_400_000L,
+                chargeWh = 301, deviceChargeWh = 184, deliveredWh = 130, deviceInverterWh = 125,
+            ),
+            de.rasier.speicher.energy.DeviceDay(
+                date = part, batteryId = id, pvWh = 318, measuredPvWh = 7, measuredPvMs = 20_000_000L,
+                chargeWh = 5, deviceChargeWh = 138, deliveredWh = 2, deviceInverterWh = 0,
+            ),
         ))
         val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
         val stats = hub.batteryStats(java.time.LocalDate.now(zone).minusDays(2), java.time.LocalDate.now(zone), ServerHub.Bucket.DAY)
-        val pv = stats.series.first { it.id == id }.pv
-        assertEquals(343, pv[0], "der vollstaendig gemessene Tag muss die eigene Messung zeigen")
-        assertEquals(318, pv[1], "der nur teilweise gemessene Tag muss beim Geraetezaehler bleiben")
+        val series = stats.series.first { it.id == id }
+        assertEquals(343, series.pv[0], "der vollstaendig gemessene Tag muss die eigene Messung zeigen")
+        assertEquals(318, series.pv[1], "der nur teilweise gemessene Tag muss beim Geraetezaehler bleiben")
+        // Charge and output follow the same rule, or the same day reads differently depending on
+        // whether the chart is showing days or weeks.
+        assertEquals(301, series.charge[0]); assertEquals(138, series.charge[1])
+        assertEquals(130, series.output[0]); assertEquals(0, series.output[1])
+    }
+
+    @Test
+    fun `a day with no battery data at all still reports its coverage`() {
+        // The warning exists for exactly this day, so switching it off when the coverage is zero - which
+        // a guard on batteryCoverageMs did - defeated its purpose. Real case from the VM: 10.11., the
+        // meter delivered 7.2 h, the solar yield came out as 0 and nothing on screen said why.
+        val day = "2026-11-10"
+        val start = java.time.LocalDate.parse(day).atStartOfDay(zone).toInstant().toEpochMilli()
+        val over = start + 86_400_000L
+        val t = Tariff(30.0, 8.0)
+        val noBattery = de.rasier.speicher.energy.DailyEnergy(
+            date = day, gridImportWh = 1668.0, meterCoverageMs = 25_747_651L, batteryCoverageMs = 0L)
+        assertEquals(0.0, EnergyDto.from(noBattery, t, over, zone).dayCoveragePercent)
+
+        val partly = noBattery.copy(batteryCoverageMs = 25_747_651L)
+        val pct = EnergyDto.from(partly, t, over, zone).dayCoveragePercent!!
+        assertTrue(pct > 29.0 && pct < 30.0, "7,2 von 24 Stunden sind rund 30 %, waren $pct")
+
+        val whole = noBattery.copy(batteryCoverageMs = 86_400_000L)
+        assertEquals(100.0, EnergyDto.from(whole, t, over, zone).dayCoveragePercent)
+
+        // A bucket label is not a calendar day and must not be reported as one.
+        assertNull(EnergyDto.from(partly.copy(date = "12:05"), t, over, zone).dayCoveragePercent)
+        assertNull(EnergyDto.from(partly.copy(date = "10.11.-16.11."), t, over, zone).dayCoveragePercent)
+        // Without a clock there is nothing to compare against.
+        assertNull(EnergyDto.from(partly, t).dayCoveragePercent)
     }
 
     @Test
