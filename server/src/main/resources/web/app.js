@@ -60,12 +60,13 @@ const VALUE_INFO = `
 <p class="note">Ohne DTU sind einige Werte geschätzt. Die exakten Netzwerte stehen in „Zählerbasiert“, sobald zwei Ablesungen vorliegen.</p>
 <p class="note">Die Werte sind gruppiert in <b>Verbrauch</b> (was das Haus braucht) und <b>Erzeugung</b> (was die Solaranlage liefert).</p>
 <p class="note"><b>Grundlage:</b> Wechselrichter-Abgabe = Speicherabgabe × Wirkungsgrad (höchstens die WR-Maximalleistung). Daraus folgen die übrigen Werte:</p>
+<p class="note"><b>Zwei Quellen für den Solarertrag:</b> Der <b>Solarertrag</b> hier ist unsere eigene Messung – die PV-Leistung wird laufend abgefragt und aufsummiert. Das <b>„PV heute (Gerätezähler)"</b> im Speicher-Block ist dagegen der Tageszähler des Speichers selbst. Beide sind richtig, zählen aber nicht dasselbe: In der Praxis liegt unsere Messung etwa 5 bis 8 % höher. Die beiden Gerätezähler ergeben zusammen deshalb <i>nicht</i> genau den Solarertrag.</p>
 <table class="info-table">
   <tr><th>Wert</th><th>Berechnung</th></tr>
   <tr><td>Hausverbrauch</td><td>= „davon Solar“ + „aus dem Netz“</td></tr>
   <tr><td>davon Solar</td><td>= Speicherabgabe × Wirkungsgrad − Einspeisung</td></tr>
   <tr><td>aus dem Netz</td><td>= am CT002 gemessener Bezug</td></tr>
-  <tr><td>Solarertrag</td><td>= PV-Eingang Speicher 1 + PV-Eingang Speicher 2</td></tr>
+  <tr><td>Solarertrag</td><td>= gemessene PV-Leistung beider Speicher, über den Tag aufsummiert</td></tr>
   <tr><td>Einspeisung</td><td>= am CT002 gemessene Einspeisung</td></tr>
   <tr><td>Autarkie</td><td>= „davon Solar“ ÷ Hausverbrauch</td></tr>
   <tr><td>Ersparnis</td><td>= „davon Solar“ × Bezugspreis + Einspeisung × Einspeisevergütung</td></tr>
@@ -216,7 +217,7 @@ function renderBatteries(s) {
       ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
       ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
-      ${b.dailyPvWh != null ? row("PV heute", KWH(b.dailyPvWh), "solar") : ""}
+      ${b.dailyPvWh != null ? row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar") : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
       ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}

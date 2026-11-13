@@ -157,6 +157,10 @@ class CloudDeviceLink(
             } else {
                 CloudPayloads.parseMeter(fields, entry.second)?.let {
                     meter = it
+                    // Reported only: the value is still used, because which side is wrong is unknown
+                    // and the phase convention under export has never been seen in practice.
+                    if (it.totalContradictsPhases)
+                        log("CT002 unplausibel: Gesamtwert ${it.totalW} W passt nicht zur Phasensumme ${it.phaseW.sum()} W, roh='${entry.first}'")
                     // Capture the full raw frame + per-phase split for implausibly high totals, so a
                     // grid "needle" can be diagnosed (real inrush spread over phases vs. a sensor glitch
                     // on a single phase). Logged regardless of debug, but rare by nature.

@@ -3,6 +3,7 @@ package de.rasier.speicher.protocol.cloud
 import de.rasier.speicher.control.BatteryCommand
 import de.rasier.speicher.model.ChargeMode
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -78,5 +79,29 @@ class CloudPayloadsTest {
         assertEquals(184, b.dailyChargeWh)      // bc: into the cells
         assertEquals(125, b.dailyInverterWh)    // it: to the inverter
         assertEquals(de.rasier.speicher.model.ManualSlot(true, 0, 23 * 60 + 59, 800), b.manualSlot)
+    }
+}
+
+/** The CT002 frame reports the three phases and the total; they check each other. */
+class MeterPlausibilityTest {
+    private fun read(a: Int, b: Int, c: Int, total: Int) =
+        de.rasier.speicher.model.MeterReading(1, listOf(a, b, c), total)
+
+    @Test
+    fun `real frames of the owner's meter are accepted`() {
+        // Taken verbatim from the device: total and phase sum differ by a watt or two.
+        assertFalse(read(33, 68, 12, 113).totalContradictsPhases)
+        assertFalse(read(33, 67, 11, 113).totalContradictsPhases)
+        assertFalse(read(33, 69, 12, 114).totalContradictsPhases)
+    }
+
+    @Test
+    fun `a high load spread over the phases is not called implausible`() {
+        assertFalse(read(1870, 1870, 1870, 5610).totalContradictsPhases)
+    }
+
+    @Test
+    fun `a total that contradicts its own phases is reported`() {
+        assertTrue(read(33, 68, 12, 5610).totalContradictsPhases)
     }
 }

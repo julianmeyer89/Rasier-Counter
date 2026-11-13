@@ -66,7 +66,19 @@ data class MeterReading(
     val timestampMs: Long,
     val phaseW: List<Int>,
     val totalW: Int = phaseW.sum(),
-)
+) {
+    /**
+     * True when the reported total contradicts the device's own phase values. The frame carries both,
+     * so they are a free plausibility check on each other; in healthy frames they agree within a
+     * couple of watts. Which of the two would be wrong cannot be decided here, so this only reports.
+     */
+    val totalContradictsPhases: Boolean
+        get() {
+            if (phaseW.isEmpty()) return false
+            val gap = kotlin.math.abs(totalW - phaseW.sum())
+            return gap > 100 && gap > kotlin.math.abs(totalW) / 10
+        }
+}
 
 /** Everything the app knows about the system at one point in time. */
 @Serializable
