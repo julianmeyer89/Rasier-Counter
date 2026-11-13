@@ -117,6 +117,7 @@ class ServerHub(
     private var lastRelinkMs = 0L
     private var linkDownPushed = false
     private var meterDownPushed = false
+    private var linkDownSinceMs = 0L  // 0 = cloud link healthy; else since when no device data arrived
     private var meterRecoveryTries = 0
     // Only write when something actually changed: at a 1.7 s poll rate this used to be ~50.000
     // pointless writes a day.
@@ -209,6 +210,23 @@ class ServerHub(
             else if (snapshot.batteries.isNotEmpty() && ctStaleSinceMs == 0L) ctStaleSinceMs = nowMs
         }
         if (meterTs > 0L) lastMeterTimestampMs = meterTs
+
+        // Judge the cloud link by the data it delivers, not by whether a poll threw. relinkIfDead only
+        // counts thrown polls, so a link that answers but carries nothing - reporting not connected with
+        // no device frames at all - raised no alert and sent no push. That is how the system could sit
+        // silent for nine hours while every other condition had a warning.
+        val dataMs = link.status.lastDataMs
+        val linkHealthy = link.status.connected && dataMs != null && nowMs - dataMs < LINK_STALE_MS
+        if (linkHealthy) {
+            if (linkDownPushed) {
+                pushNtfy("Cloud wieder verbunden", "Der Server bekommt wieder Daten aus der Marstek-Cloud.", "default", "white_check_mark")
+                addEvents(listOf("Cloud-Verbindung wieder da."), nowMs)
+            }
+            linkDownSinceMs = 0L
+            linkDownPushed = false
+        } else if (linkDownSinceMs == 0L) {
+            linkDownSinceMs = nowMs
+        }
 
         snapshot.batteries.forEach { b ->
             b.capacityWh?.let { lastKnownCapacity[b.id] = it }
@@ -451,6 +469,24 @@ class ServerHub(
         return listOf(AlertDto("meter-down", "WARN", "CT002 liefert keine Daten",
             "Seit $minutes Minuten kommen keine Zählerwerte. Netzbezug, Hausverbrauch und Autarkie werden " +
                 "für diese Zeit nicht gezählt. Der Server versucht die Verbindung selbst aufzufrischen.", nowMs))
+    }
+
+    /**
+     * Warns when no device data has arrived for a while. Deliberately separate from [relinkIfDead],
+     * which reacts to polls that throw: the link can report itself connected and still deliver nothing
+     * (a rotated client certificate, a rejected login), and that case produced no warning at all.
+     */
+    private fun linkAlerts(nowMs: Long): List<AlertDto> {
+        if (linkDownSinceMs == 0L || nowMs - linkDownSinceMs < LINK_ALERT_MS) return emptyList()
+        val minutes = (nowMs - linkDownSinceMs) / 60_000
+        if (!linkDownPushed) {
+            linkDownPushed = true
+            pushNtfy("Keine Daten aus der Cloud", "Seit $minutes min keine Geraetedaten. Steuerung und Zaehlung stehen solange still.", "high", "warning")
+        }
+        return listOf(AlertDto("link-down", "WARN", "Keine Daten aus der Marstek-Cloud",
+            "Seit $minutes Minuten kommen keine Gerätedaten an. Solange wird nichts gesteuert und nichts " +
+                "gezählt. Der Server baut die Verbindung selbst immer wieder neu auf; hilft das nicht, hat " +
+                "Marstek meist das Client-Zertifikat gewechselt – dann erneuert es der Zertifikat-Wächter.", nowMs))
     }
 
     suspend fun abortCalibration() = mutex.withLock {
@@ -1242,7 +1278,7 @@ class ServerHub(
                 )
             },
             today = today()?.let { EnergyDto.from(it, config.tariff, nowMs, zone) },
-            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + meterAlerts(nowMs) +
+            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + linkAlerts(nowMs) + meterAlerts(nowMs) +
                 dodAlerts(batteries, nowMs) + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
@@ -1291,6 +1327,8 @@ class ServerHub(
         const val MAX_SEND_ATTEMPTS = 4               // re-sends before a setting is reported as failed
         const val METER_FRESH_MS = 120_000L           // older CT002 readings are not shown as current
         const val METER_ALERT_MS = 600_000L           // warn after this long without meter data
+        const val LINK_STALE_MS = 300_000L            // no device data for this long = link unhealthy
+        const val LINK_ALERT_MS = 600_000L            // warn after this long without any device data
         const val MIN_CALIBRATION_DOD = 10            // below this a released battery could not discharge
         const val METER_RECOVERY_TRIES = 3            // reconnect attempts per silent spell of the CT002
         const val HISTORY_SAVE_MS = 300_000L          // the chart history is written at most this often

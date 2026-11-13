@@ -41,6 +41,17 @@ private class DeafLink(zone: ZoneId) : DeviceLink {
     override fun close() {}
 }
 
+/** Answers every poll without throwing, but reports no connection and never delivers device data. */
+private class SilentLink : DeviceLink {
+    override suspend fun connect() {}
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) =
+        de.rasier.speicher.model.SystemSnapshot(nowMs, emptyList(), null)
+    override suspend fun send(command: BatteryCommand): Boolean = true
+    override val batteryIds: List<String> get() = emptyList()
+    override val status: LinkStatus get() = LinkStatus(false, "kein Zertifikat", null)
+    override fun close() {}
+}
+
 class ServerHubTest {
     private val zone = ZoneId.of("Europe/Berlin")
 
@@ -445,6 +456,22 @@ class ServerSmallFixesTest {
         assertNull(EnergyDto.from(partly.copy(date = "10.11.-16.11."), t, over, zone).dayCoveragePercent)
         // Without a clock there is nothing to compare against.
         assertNull(EnergyDto.from(partly, t).dayCoveragePercent)
+    }
+
+    @Test
+    fun `a link that answers but delivers nothing raises an alarm`() = runTest {
+        // The real outage of 13.11.: the link reported itself not connected and no device frame ever
+        // arrived, but the polls did not throw - so pollFailures stayed 0, relinkIfDead never fired its
+        // push, and nothing warned for nine hours while meter, DoD and self-discharge all had alerts.
+        val dir = Files.createTempDirectory("link").toFile()
+        val hub = ServerHub(demoConfig(dir).copy(demo = false), SilentLink(), dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        assertTrue(hub.state.value.alerts.none { it.key == "link-down" }, "ein einzelner Aussetzer darf nicht warnen")
+        hub.poll(t0 + ServerHub.LINK_ALERT_MS + 1000)
+        val a = hub.state.value.alerts.firstOrNull { it.key == "link-down" }
+        assertTrue(a != null, "nach der Schwelle muss gewarnt werden")
+        assertTrue(a!!.message.contains("Minuten"), "die Warnung soll sagen, seit wann: ${a.message}")
     }
 
     @Test
