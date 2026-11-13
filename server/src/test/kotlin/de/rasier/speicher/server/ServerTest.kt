@@ -25,6 +25,20 @@ private fun demoConfig(dir: File, write: Boolean = true) = ServerConfig(
     automation = AutomationSettings(calibration = CalibrationSettings(holdMinutes = 30, intervalDays = 0)),
 )
 
+/** Accepts every command and reports success, but never applies it - like a lost cloud command. */
+private class DeafLink(zone: ZoneId) : DeviceLink {
+    private val sim = de.rasier.speicher.sim.SimulatedSystem(zone)
+    var sent = 0
+        private set
+
+    override suspend fun connect() {}
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) = sim.advance(nowMs)
+    override suspend fun send(command: BatteryCommand): Boolean { sent++; return true }
+    override val batteryIds: List<String> get() = sim.batteryIds
+    override val status: LinkStatus get() = LinkStatus(true, "Test", null)
+    override fun close() {}
+}
+
 class ServerHubTest {
     private val zone = ZoneId.of("Europe/Berlin")
 
@@ -63,6 +77,38 @@ class ServerHubTest {
         hub.manualCommand(BatteryCommand.SetAdaptiveMode(link.batteryIds.first(), false))
         hub.poll() // within the pause window -> CT002 not polled
         assertEquals(before, link.meterPolls)
+    }
+
+    @Test
+    fun `a setting the device ignores is re-sent and then reported`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val link = DeafLink(zone)
+        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        // Real wall-clock times: manualCommand stamps the command with the system clock.
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        hub.manualCommand(BatteryCommand.SetDod(link.batteryIds.first(), 33))
+        assertEquals(1, link.sent)
+
+        var t = t0
+        repeat(8) { t += ServerHub.CONFIRM_GRACE_MS + 1000; hub.poll(t) }
+
+        assertEquals(ServerHub.MAX_SEND_ATTEMPTS, link.sent, "Befehl muss erneut gesendet, aber nicht endlos wiederholt werden")
+        assertTrue(hub.state.value.alerts.any { it.title == "Einstellung kam nicht an" })
+    }
+
+    @Test
+    fun `a setting the device applies is not re-sent`() = runTest {
+        val dir = Files.createTempDirectory("srv").toFile()
+        val link = SimDeviceLink(zone)
+        val hub = ServerHub(demoConfig(dir), link, dir, zone)
+        val t0 = System.currentTimeMillis()
+        hub.poll(t0)
+        hub.manualCommand(BatteryCommand.SetDod(link.batteryIds.first(), 33))
+        var t = t0
+        repeat(4) { t += ServerHub.CONFIRM_GRACE_MS + 1000; hub.poll(t) }
+        assertTrue(hub.state.value.alerts.none { it.title == "Einstellung kam nicht an" })
+        assertEquals(33, hub.state.value.batteries.first { it.id == link.batteryIds.first() }.dodPercent)
     }
 
     @Test

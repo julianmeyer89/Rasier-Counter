@@ -85,20 +85,59 @@ class CalibrationTest {
         assertEquals(CalibrationPhase.RECOVER_WAIT, run.phase)
         assertTrue(sent.last() is BatteryCommand.Reboot)                 // remote restart
 
-        // Battery reachable again + settle -> back to auto, attempt counted.
+        // The battery only counts as back once a frame from AFTER the restart arrives: an old cached
+        // frame must not start the settle timer, or "back to Auto" is sent while it is still booting.
         val t1 = t0 + CalibrationMachine.RECOVER_MANUAL_WAIT_MS + 1000
-        step(t1 + 5000, out = 0, grid = 200)                            // reachable, settling
-        step(t1 + CalibrationMachine.RECOVER_SETTLE_MS + 10_000, out = 0, grid = 200)
+        step(t1 + 10_000, out = 0, grid = 200, batAge = 10_000)          // only the pre-restart frame
+        assertEquals(CalibrationPhase.RECOVER_WAIT, run.phase)
+        step(t1 + 40_000, out = 0, grid = 200, batAge = 40_000)          // still the same old frame
+        assertEquals(CalibrationPhase.RECOVER_WAIT, run.phase)
+        step(t1 + 50_000, out = 0, grid = 200)                           // fresh frame: now settling
+        assertEquals(CalibrationPhase.RECOVER_WAIT, run.phase)
+        step(t1 + 50_000 + CalibrationMachine.RECOVER_SETTLE_MS - 5_000, out = 0, grid = 200)
+        assertEquals(CalibrationPhase.RECOVER_WAIT, run.phase)
+        step(t1 + 50_000 + CalibrationMachine.RECOVER_SETTLE_MS + 1_000, out = 0, grid = 200)
         assertEquals(CalibrationPhase.VERIFY, run.phase)
         assertEquals(BatteryCommand.SetAdaptiveMode(B1, true), sent.last())
         assertEquals(1, run.recoveryAttempt)
 
         // Still failing and attempts exhausted (1) -> calibration stops.
-        val t2 = t1 + CalibrationMachine.RECOVER_SETTLE_MS + 10_000
+        val t2 = t1 + 50_000 + CalibrationMachine.RECOVER_SETTLE_MS + 1_000
         step(t2, out = 0, grid = 200)
         step(t2 + CalibrationMachine.VERIFY_FAIL_SUSTAIN_MS + MIN, out = 0, grid = 200)
         assertEquals(CalibrationPhase.ABORTED, run.phase)
         assertEquals(false, run.results.single().success)
+    }
+
+    @Test
+    fun `a battery that never returns after the restart stops the calibration and restores`() {
+        val saved = SavedBatterySettings(80, ChargeMode.SIMULTANEOUS, true)
+        val run = machine.start(listOf(B1), 0).copy(phase = CalibrationPhase.RECOVER_WAIT, phaseSinceMs = 0, saved = saved)
+        // While it reboots the battery drops out of the snapshot entirely: that must not stall the run.
+        val waiting = machine.step(run, snapshot(MIN, gridW = 100), MIN)
+        assertEquals(CalibrationPhase.RECOVER_WAIT, waiting.run.phase)
+        val t = CalibrationMachine.RECOVER_REACHABLE_CAP_MS + MIN
+        val s = machine.step(run, snapshot(t, gridW = 100), t)
+        assertEquals(CalibrationPhase.ABORTED, s.run.phase)
+        assertTrue(BatteryCommand.SetDod(B1, 80) in s.commands)
+        assertEquals(false, s.run.results.single().success)
+    }
+
+    @Test
+    fun `verify does not accept a battery that is still in manual mode`() {
+        val saved = SavedBatterySettings(80, ChargeMode.SIMULTANEOUS, true)
+        val run = machine.start(listOf(B1), 0).copy(phase = CalibrationPhase.VERIFY, phaseSinceMs = 0, saved = saved)
+        // 800 W out passes the plain output check, but the release never arrived (still manual mode).
+        val manual = battery(B1, t = 5000, soc = 99, out = 800, dod = 80).copy(adaptiveMode = false)
+        val waiting = machine.step(run, snapshot(5000, manual, gridW = -650), 5000)
+        assertEquals(CalibrationPhase.VERIFY, waiting.run.phase)
+        assertTrue(waiting.run.results.isEmpty())
+        // After the grace period it stops and restores instead of reporting success.
+        val t = CalibrationMachine.RELEASE_CONFIRM_MS + MIN
+        val s = machine.step(run, snapshot(t, manual.copy(timestampMs = t), gridW = -650), t)
+        assertEquals(CalibrationPhase.ABORTED, s.run.phase)
+        assertEquals(false, s.run.results.single().success)
+        assertTrue(BatteryCommand.SetAdaptiveMode(B1, true) in s.commands)
     }
 
     @Test

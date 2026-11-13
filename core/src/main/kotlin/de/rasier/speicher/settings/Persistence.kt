@@ -39,9 +39,19 @@ fun SystemSnapshot.toHistoryPoint() = HistoryPoint(
 @Serializable
 data class EventEntry(val t: Long, val text: String)
 
-/** Everything that must survive an app restart, stored as JSON files in the app's private directory. */
-class FileStore(private val dir: File) {
+/**
+ * Everything that must survive an app restart, stored as JSON files in the app's private directory.
+ *
+ * A file that cannot be decoded (e.g. because an update added a field) is NEVER silently dropped:
+ * it is copied aside, reported through [log] and listed in [unreadable], so the caller can warn the
+ * user instead of overwriting the old content with defaults.
+ */
+class FileStore(private val dir: File, private val log: (String) -> Unit = {}) {
     private val json = AppSettings.json
+    private val _unreadable = mutableListOf<String>()
+
+    /** Names of files that existed but could not be decoded during this session. */
+    val unreadable: List<String> get() = _unreadable.toList()
 
     init {
         dir.mkdirs()
@@ -71,17 +81,43 @@ class FileStore(private val dir: File) {
     private fun <T> read(name: String, serializer: kotlinx.serialization.KSerializer<T>): T? {
         val f = File(dir, name)
         if (!f.exists()) return null
-        return runCatching { json.decodeFromString(serializer, f.readText()) }.getOrNull()
+        val text = runCatching { f.readText() }.getOrElse {
+            _unreadable += name
+            log("$name nicht lesbar: ${it.message}")
+            return null
+        }
+        return runCatching { json.decodeFromString(serializer, text) }.getOrElse { e ->
+            // Keep the content instead of letting the next write overwrite it with defaults.
+            val copy = File(dir, "$name.unlesbar")
+            runCatching { f.copyTo(copy, overwrite = true) }
+            _unreadable += name
+            log("$name ist unlesbar (${e.message}). Kopie: ${copy.name}. Es gelten Standardwerte.")
+            null
+        }
     }
 
-    /** Atomic write: a crash during saving never leaves a half-written file. */
+    /**
+     * Atomic write: a crash during saving never leaves a half-written file. Once per [BACKUP_MS] the
+     * previous content is kept as `<name>.bak`, so a bad write or a format change stays recoverable.
+     */
     private fun <T> write(name: String, serializer: kotlinx.serialization.KSerializer<T>, value: T) {
         val tmp = File(dir, "$name.tmp")
         tmp.writeText(json.encodeToString(serializer, value))
         val target = File(dir, name)
+        if (target.exists()) {
+            val bak = File(dir, "$name.bak")
+            if (!bak.exists() || System.currentTimeMillis() - bak.lastModified() > BACKUP_MS) {
+                runCatching { target.copyTo(bak, overwrite = true) }
+            }
+        }
         if (!tmp.renameTo(target)) {
             target.delete()
             tmp.renameTo(target)
         }
+    }
+
+    companion object {
+        /** Minimum age of the `.bak` copy before it is refreshed (keeps the write load low). */
+        const val BACKUP_MS = 12 * 3_600_000L
     }
 }

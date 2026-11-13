@@ -5,6 +5,7 @@ import de.rasier.speicher.control.AutomationEngine
 import de.rasier.speicher.control.AutomationSettings
 import de.rasier.speicher.control.AutomationState
 import de.rasier.speicher.control.BatteryCommand
+import de.rasier.speicher.control.appliedTo
 import de.rasier.speicher.control.CalibrationPhase
 import de.rasier.speicher.control.CalibrationRun
 import de.rasier.speicher.control.GroupState
@@ -50,7 +51,7 @@ class ServerHub(
     private val log: (String) -> Unit = { println(it) },
 ) {
     private val mutex = Mutex()
-    private val store = FileStore(dataDir)
+    private val store = FileStore(dataDir, log)
     private val settingsFile = File(dataDir, "user_settings.json")
     private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true }
     private var integrator = EnergyIntegrator(config.system, zone).also { it.restore(store.loadDays()) }
@@ -94,6 +95,16 @@ class ServerHub(
     private var ctPauseUntilMs = 0L
     // Background scope for fire-and-forget push notifications (never blocks the poll loop).
     private val pushScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Repeated failed polls mean the link is dead. The self-heal below only runs after a SUCCESSFUL
+    // poll, so the failure path has to rebuild the connection itself.
+    private var pollFailures = 0
+    private var lastFailureEventMs = 0L
+    private var lastRelinkMs = 0L
+    private var linkDownPushed = false
+    // Settings that were sent but not yet confirmed by the device, plus the warnings about those
+    // that never arrived (kept apart from the monitor alerts, which are replaced on every tick).
+    private val pending = mutableListOf<PendingWrite>()
+    private var writeAlerts: List<Alert> = emptyList()
     // Sliding window of recent CT002 polls: true = a fresh reading arrived. Drives the quality gauge.
     private val meterFreshWindow = ArrayDeque<Boolean>()
     // Per-battery reachability, so a reboot (device stops answering, then returns) is visible in the log.
@@ -114,7 +125,22 @@ class ServerHub(
             if (capacitySamplesFile.exists())
                 capacitySamples = json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(CapacitySample.serializer()), capacitySamplesFile.readText())
         }.onFailure { log("Kapazitäts-Messungen nicht lesbar: ${it.message}") }
+        // Losing the stored state silently would be the worst case during a calibration, so say it.
+        val lost = store.unreadable
+        if (lost.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            addEvents(lost.map { "ACHTUNG: $it war nicht lesbar – Kopie als $it.unlesbar gesichert, es gelten Standardwerte." }, now)
+            writeAlerts = writeAlerts + Alert(
+                "store-unreadable", Alert.Severity.WARNING, "Gespeicherte Daten nicht lesbar",
+                "${lost.joinToString()} konnte(n) nicht gelesen werden. Die Inhalte liegen als .unlesbar daneben. " +
+                    "Lief eine Kalibrierung, prüfe bitte Entladetiefe und Lademodus der Speicher von Hand.", now,
+            )
+            pushNtfy("Gespeicherte Daten nicht lesbar", lost.joinToString(), "high", "warning")
+        }
     }
+
+    /** A setting that was sent and is being checked against what the device reports. */
+    private class PendingWrite(val command: BatteryCommand, var sentMs: Long, var attempts: Int)
 
     suspend fun poll(nowMs: Long = System.currentTimeMillis()) = mutex.withLock {
         // The CT002 is polled every cycle; the batteries only when their (longer) interval has elapsed.
@@ -124,11 +150,23 @@ class ServerHub(
         val snapshot = try {
             link.poll(nowMs, pollMeter = !ctPaused, pollBattery = pollBattery, replyWaitMs = replyWaitMs)
         } catch (e: Exception) {
+            pollFailures++
             log("Abfrage fehlgeschlagen: ${e.message}")
-            addEvents(listOf("Abfrage fehlgeschlagen: ${e.message}"), nowMs)
+            // One event per minute, not one per cycle: at a 1.7 s rate the 500-entry log would be
+            // overwritten within minutes and bury the cause.
+            if (nowMs - lastFailureEventMs >= FAILURE_EVENT_MS) {
+                lastFailureEventMs = nowMs
+                addEvents(listOf("Abfrage fehlgeschlagen (${pollFailures}x): ${e.message}"), nowMs)
+            }
             recordMeterFresh(false)
             rebuild(nowMs)
+            relinkIfDead(nowMs)
             return@withLock
+        }
+        if (pollFailures > 0) {
+            addEvents(listOf("Abfrage läuft wieder (nach $pollFailures Fehlversuchen)."), nowMs)
+            pollFailures = 0
+            linkDownPushed = false
         }
         if (pollBattery) lastBatteryPollMs = nowMs
         // A CT002 reading counts as "fresh" when its timestamp advanced since the last cycle.
@@ -150,6 +188,7 @@ class ServerHub(
         snapshot.meter?.let { lastMeter = it }
         lastSnapshot = snapshot
         checkReachability(nowMs)
+        confirmPending(nowMs)
 
         integrator.add(snapshot)
         if (!config.demo) recordDeviceDays(snapshot)
@@ -185,25 +224,101 @@ class ServerHub(
         if (nowMs - lastReconnectMs < RECONNECT_COOLDOWN_MS) return
         lastReconnectMs = nowMs
         addEvents(listOf("CT002 seit ${(nowMs - ctStaleSinceMs) / 60_000} min stumm (Speicher ok) – verbinde neu…"), nowMs)
-        runCatching { link.close() }
-        var ok = false
-        for (attempt in 1..3) {
-            ok = runCatching { link.connect() }.onFailure { log("Neuverbindung (Versuch $attempt) fehlgeschlagen: ${it.message}") }.isSuccess
-            if (ok) break
-            delay(3000L)
-        }
-        if (ok) {
+        if (relink()) {
             ctStaleSinceMs = 0L
             addEvents(listOf("Neu verbunden – CT002-Topic aufgefrischt."), nowMs)
         } else {
-            addEvents(listOf("Neuverbindung fehlgeschlagen, neuer Versuch nach Cooldown."), nowMs)
+            // The link is closed now, so every poll fails from here on: relinkIfDead keeps trying.
+            addEvents(listOf("Neuverbindung fehlgeschlagen, wird weiter versucht."), nowMs)
         }
+    }
+
+    /**
+     * Rebuilds the link after repeated failed polls. Without this a dropped connection (or a failed
+     * self-heal, which leaves the link closed) would silence the server until a manual restart.
+     */
+    private suspend fun relinkIfDead(nowMs: Long) {
+        if (pollFailures < RELINK_AFTER_FAILURES) return
+        if (nowMs - lastRelinkMs < RELINK_RETRY_MS) return
+        lastRelinkMs = nowMs
+        addEvents(listOf("Verbindung antwortet seit $pollFailures Abfragen nicht – baue sie neu auf…"), nowMs)
+        if (relink()) {
+            addEvents(listOf("Verbindung wiederhergestellt."), nowMs)
+        } else {
+            addEvents(listOf("Neuaufbau fehlgeschlagen, nächster Versuch in ${RELINK_RETRY_MS / 60_000} min."), nowMs)
+            if (!linkDownPushed) {
+                linkDownPushed = true
+                pushNtfy("Verbindung gestoert", "Der Server erreicht die Marstek-Cloud seit $pollFailures Abfragen nicht.", "high", "warning")
+            }
+        }
+        rebuild(nowMs)
+    }
+
+    /** Closes and re-opens the link, a few attempts apart. True when it is usable again. */
+    private suspend fun relink(): Boolean {
+        runCatching { link.close() }
+        for (attempt in 1..3) {
+            if (runCatching { link.connect() }.onFailure { log("Neuverbindung (Versuch $attempt) fehlgeschlagen: ${it.message}") }.isSuccess) return true
+            delay(3000L)
+        }
+        return false
+    }
+
+    /**
+     * Cloud commands are fire-and-forget (MQTT QoS 0): a lost command looks exactly like a successful
+     * one. Every sent setting is therefore compared with what the device reports and re-sent until it
+     * matches, so the calibration can no longer continue on an assumption that never came true.
+     */
+    private suspend fun confirmPending(nowMs: Long) {
+        if (pending.isEmpty()) return
+        val settled = mutableListOf<PendingWrite>()
+        for (p in pending) {
+            val key = writeKey(p.command)
+            val b = lastBatteries[p.command.batteryId]
+            val applied = b?.let { p.command.appliedTo(it) }
+            if (applied == true) {
+                settled += p
+                writeAlerts = writeAlerts.filterNot { it.key == key }
+                log("Bestätigt: ${describe(p.command)}")
+                continue
+            }
+            // Judge only against a frame the device produced after the command went out.
+            val fresh = b != null && b.timestampMs > p.sentMs
+            if (!fresh || nowMs - p.sentMs < CONFIRM_GRACE_MS) continue
+            if (applied == null) { settled += p; continue } // device does not report it: nothing to verify
+            if (p.attempts >= MAX_SEND_ATTEMPTS) {
+                settled += p
+                addEvents(listOf("Nicht übernommen nach ${p.attempts} Versuchen: ${describe(p.command)}"), nowMs)
+                writeAlerts = writeAlerts.filterNot { it.key == key } + Alert(
+                    key, Alert.Severity.WARNING, "Einstellung kam nicht an",
+                    "${describe(p.command)} wurde ${p.attempts}x gesendet, das Gerät meldet weiter einen anderen Wert.", nowMs,
+                )
+                pushNtfy("Einstellung kam nicht an", describe(p.command), "high", "warning")
+                continue
+            }
+            p.attempts++
+            p.sentMs = nowMs
+            val ok = runCatching { link.send(p.command) }.getOrDefault(false)
+            addEvents(listOf("Erneut gesendet (${p.attempts}): ${describe(p.command)}" + if (ok) "" else " – Senden fehlgeschlagen"), nowMs)
+            if (ok && p.command is BatteryCommand.SetAdaptiveMode) pauseCtForSwitch(nowMs)
+        }
+        pending.removeAll(settled)
+    }
+
+    private fun writeKey(c: BatteryCommand) = "write-${c.batteryId}-${c::class.simpleName}"
+
+    /** Remembers a sent setting so it can be verified and re-sent if the device ignored it. */
+    private fun trackPending(c: BatteryCommand, nowMs: Long) {
+        if (c is BatteryCommand.Reboot) return // a restart leaves no lasting trace to check against
+        pending.removeAll { it.command.batteryId == c.batteryId && it.command::class == c::class }
+        pending += PendingWrite(c, nowMs, 1)
     }
 
     suspend fun manualCommand(command: BatteryCommand): Boolean = mutex.withLock {
         val now = System.currentTimeMillis()
         val ok = runCatching { link.send(command) }.getOrDefault(false)
         addEvents(listOf((if (ok) "Gesendet: " else "Fehlgeschlagen: ") + describe(command)), now)
+        if (ok) trackPending(command, now)
         if (ok && command is BatteryCommand.SetAdaptiveMode) pauseCtForSwitch(now)
         rebuild(now)
         ok
@@ -672,6 +787,9 @@ class ServerHub(
             if (automatic) suggestions = emptyList()
             return
         }
+        // A running calibration is a deliberate, bounded sequence. The daily write limit must not drop
+        // one of its commands half way through and leave the battery in a transient state.
+        val calibrating = autoState.calibration?.finished == false
         val newSuggestions = mutableListOf<BatteryCommand>()
         for (c in commands) {
             if (automatic && !config.automationsMayWrite) {
@@ -679,13 +797,14 @@ class ServerHub(
                 addEvents(listOf("Vorschlag (Schreiben aus): ${describe(c)}"), nowMs)
                 continue
             }
-            if (automatic && !writeGuard.allow(c.batteryId, nowMs, zone)) {
+            if (automatic && !calibrating && !writeGuard.allow(c.batteryId, nowMs, zone)) {
                 addEvents(listOf("Schreiblimit erreicht, übersprungen: ${describe(c)}"), nowMs)
                 continue
             }
             if (automatic) writeGuard.record(c.batteryId, nowMs, zone)
             val ok = runCatching { link.send(c) }.getOrDefault(false)
             addEvents(listOf((if (ok) "Automatik: " else "Automatik fehlgeschlagen: ") + describe(c)), nowMs)
+            if (ok) trackPending(c, nowMs)
             if (ok && c is BatteryCommand.SetAdaptiveMode) pauseCtForSwitch(nowMs)
         }
         if (automatic) suggestions = newSuggestions
@@ -846,7 +965,7 @@ class ServerHub(
                 )
             },
             today = today()?.let { EnergyDto.from(it, config.tariff) },
-            alerts = alerts.map { AlertDto.from(it) } + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
+            alerts = (alerts + writeAlerts).map { AlertDto.from(it) } + selfDischargeAlerts(batteries, nowMs) + calibrationAlerts(batteries, nowMs),
             calibration = calibration,
             suggestions = suggestions.map { toCommandDto(it) },
             lastMeterReadingMs = meterEntries.maxOfOrNull { it.timestampMs },
@@ -881,6 +1000,11 @@ class ServerHub(
         const val IDLE_W = 5                          // output/PV at or below this counts as "idle" for self-discharge
         const val REACH_STALE_MS = 30_000L            // no battery frame for this long = "not reachable" (reboot visible)
         const val CT_PAUSE_MS = 20_000L               // suppress CT002 polling this long around a mode switch
+        const val FAILURE_EVENT_MS = 60_000L          // at most one "poll failed" entry per minute
+        const val RELINK_AFTER_FAILURES = 5           // failed polls before the link is rebuilt
+        const val RELINK_RETRY_MS = 300_000L          // gap between two rebuild attempts
+        const val CONFIRM_GRACE_MS = 20_000L          // time a device gets to report a new setting
+        const val MAX_SEND_ATTEMPTS = 4               // re-sends before a setting is reported as failed
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median

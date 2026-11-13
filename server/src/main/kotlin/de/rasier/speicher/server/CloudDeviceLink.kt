@@ -46,8 +46,11 @@ class CloudDeviceLink(
     private var devices: List<Device> = emptyList()
     private val latest = ConcurrentHashMap<String, Pair<String, Long>>() // statusTopic -> (payload, ms)
     @Volatile private var connected = false
+    /** True between connect() and close(); the receiver thread lives as long as this holds. */
+    @Volatile private var running = false
     @Volatile private var lastDataMs: Long? = null
     @Volatile private var statusDetail = "nicht verbunden"
+    @Volatile private var lastDisconnectLogMs = 0L
 
     override val batteryIds: List<String> get() = devices.filter { it.isBattery }.map { it.devid }
     override val status: LinkStatus get() = LinkStatus(connected, statusDetail, lastDataMs)
@@ -64,38 +67,72 @@ class CloudDeviceLink(
             File(config.certDir, "client.key"),
         )
         val (host, port) = brokerHostPort()
+        // Automatic reconnect: without it a single dropped connection would silence the server until
+        // someone restarts it by hand. The session is clean, so every reconnect re-subscribes.
         val c = Mqtt3Client.builder()
             .identifier("mst_" + UUID.randomUUID().toString().replace("-", "").take(24))
             .serverHost(host)
             .serverPort(port)
+            .automaticReconnectWithDefaultConfig()
+            .addConnectedListener {
+                connected = true
+                statusDetail = "verbunden mit $host"
+                subscribeAll()
+            }
+            .addDisconnectedListener { ctx ->
+                connected = false
+                statusDetail = "Verbindung unterbrochen, verbinde neu…"
+                val now = System.currentTimeMillis()
+                if (now - lastDisconnectLogMs > DISCONNECT_LOG_MS) {
+                    lastDisconnectLogMs = now
+                    log("MQTT-Verbindung unterbrochen (${ctx.cause.message}) – automatischer Neuaufbau läuft.")
+                }
+            }
             .sslConfig()
             .keyManagerFactory(material.keyManagerFactory)
             .trustManagerFactory(material.trustManagerFactory)
             .applySslConfig()
             .buildBlocking()
-        c.connectWith().keepAlive(30).cleanSession(true).send()
+        // Set before connecting so the connected listener can already subscribe through it.
         client = c
+        running = true
+        c.connectWith().keepAlive(30).cleanSession(true).send()
         connected = true
         statusDetail = "verbunden mit $host"
 
-        // Receiver thread: store the latest payload per status topic.
+        // Receiver thread: store the latest payload per status topic. It must outlive single
+        // disconnects, so it runs until close() and only stops on an error while shutting down.
         val publishes = c.publishes(MqttGlobalPublishFilter.ALL)
         Thread({
-            try {
-                while (connected) {
+            while (running) {
+                try {
                     val msg = publishes.receive()
                     val topic = msg.topic.toString()
                     val payload = String(msg.payloadAsBytes, Charsets.US_ASCII)
                     latest[topic] = payload to System.currentTimeMillis()
                     lastDataMs = System.currentTimeMillis()
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                } catch (e: Exception) {
+                    if (!running) break
+                    log("MQTT-Empfang gestört: ${e.message}")
+                    Thread.sleep(1000)
                 }
-            } catch (e: Exception) {
-                if (connected) log("MQTT-Empfang beendet: ${e.message}")
             }
         }, "mqtt-receiver").apply { isDaemon = true }.start()
 
-        devices.forEach { c.subscribeWith().topicFilter(it.topics.status).qos(MqttQos.AT_MOST_ONCE).send() }
+        subscribeAll()
         log("Abonniert: ${devices.size} Geräte")
+    }
+
+    /** (Re-)subscribes every device status topic. Safe to call again after a reconnect. */
+    private fun subscribeAll() {
+        val c = client ?: return
+        for (d in devices) {
+            runCatching { c.subscribeWith().topicFilter(d.topics.status).qos(MqttQos.AT_MOST_ONCE).send() }
+                .onFailure { log("Abonnieren von ${d.name} fehlgeschlagen: ${it.message}") }
+        }
     }
 
     override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long): SystemSnapshot = withContext(Dispatchers.IO) {
@@ -199,7 +236,9 @@ class CloudDeviceLink(
     }
 
     override fun close() {
+        running = false
         connected = false
+        statusDetail = "nicht verbunden"
         runCatching { client?.disconnect() }
         client = null
     }
@@ -252,6 +291,7 @@ class CloudDeviceLink(
 
     companion object {
         private const val STALE_MS = 120_000L
+        private const val DISCONNECT_LOG_MS = 60_000L   // do not fill the log while reconnects retry
         private const val METER_OUTLIER_W = 3000   // log the raw CT002 frame above this |pwr_t| for diagnosis
     }
 }

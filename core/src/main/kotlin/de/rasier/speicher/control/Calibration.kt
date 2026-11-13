@@ -43,8 +43,14 @@ enum class CalibrationPhase {
     RECHARGE, HOLD_FULL2, VERIFY, RECOVER_MANUAL, RECOVER_WAIT, DONE, ABORTED,
 }
 
+/** The battery settings as they were before the calibration, restored when it ends.
+ *  All fields have defaults so a file written by an older version stays readable. */
 @Serializable
-data class SavedBatterySettings(val dodPercent: Int, val chargeMode: ChargeMode, val adaptive: Boolean?)
+data class SavedBatterySettings(
+    val dodPercent: Int = 90,
+    val chargeMode: ChargeMode = ChargeMode.SIMULTANEOUS,
+    val adaptive: Boolean? = null,
+)
 
 @Serializable
 data class BatteryCalibrationResult(
@@ -107,7 +113,13 @@ class CalibrationMachine(
             val cmds = run.saved?.let { restoreCmds(id, it) } ?: emptyList()
             return advance(run, id, false, "Zeitlimit von ${settings.maxHoursPerBattery} h überschritten", nowMs, cmds)
         }
-        val b = snapshot.batteries.firstOrNull { it.id == id } ?: return CalibrationStep(run, emptyList(), emptyList())
+        // While the battery reboots it drops out of the snapshot. That is expected and must not stall
+        // the run, so the restart phase keeps going without battery data; every other phase waits.
+        val b = snapshot.batteries.firstOrNull { it.id == id }
+        if (b == null) {
+            return if (run.phase == CalibrationPhase.RECOVER_WAIT) recoverWait(run, id, null, nowMs)
+            else CalibrationStep(run, emptyList(), emptyList())
+        }
         val name = b.name
 
         return when (run.phase) {
@@ -186,7 +198,7 @@ class CalibrationMachine(
                 else CalibrationStep(run.copy(phase = CalibrationPhase.RECOVER_WAIT, phaseSinceMs = nowMs, conditionSinceMs = null),
                     listOf(BatteryCommand.Reboot(id)), listOf("$name: Neustart"))
 
-            CalibrationPhase.RECOVER_WAIT -> recoverWait(run, b, nowMs)
+            CalibrationPhase.RECOVER_WAIT -> recoverWait(run, id, b, nowMs)
 
             CalibrationPhase.DONE, CalibrationPhase.ABORTED -> none(run)
         }
@@ -204,6 +216,26 @@ class CalibrationMachine(
 
     private fun verify(run: CalibrationRun, b: BatteryState, snapshot: SystemSnapshot, nowMs: Long): CalibrationStep {
         val id = b.id; val name = b.name
+        // The release must actually have arrived at the device. Without this a battery still running
+        // the 800 W manual schedule would pass the output check and the run would report success.
+        // Only an explicit contradiction counts; fields the device does not report cannot be judged.
+        val saved = run.saved
+        val released = b.adaptiveMode != false &&
+            b.chargeMode != ChargeMode.CHARGE_THEN_DISCHARGE &&
+            (saved == null || b.dodPercent == null || b.dodPercent == saved.dodPercent)
+        if (!released) {
+            // The command is re-sent until confirmed; give it time, then stop rather than claim success.
+            if (nowMs - run.phaseSinceMs < RELEASE_CONFIRM_MS) return CalibrationStep(run.copy(conditionSinceMs = null), emptyList(), emptyList())
+            val detail = "Auto=${b.adaptiveMode}, Lademodus=${b.chargeMode}, DoD=${b.dodPercent}"
+            return CalibrationStep(
+                run.copy(
+                    phase = CalibrationPhase.ABORTED,
+                    results = run.results + BatteryCalibrationResult(id, false, "Freigabe kam am Gerät nicht an ($detail) – gestoppt", nowMs),
+                ),
+                run.saved?.let { restoreCmds(id, it) } ?: emptyList(),
+                listOf("$name: Freigabe nicht bestätigt ($detail) – Kalibrierung GESTOPPT"),
+            )
+        }
         if (b.totalOutputW > VERIFY_DELIVER_W) return advance(run, id, true, "Vollzyklus abgeschlossen, Nulleinspeisung läuft", nowMs)
         val gridW = snapshot.meter?.totalW
         val failing = gridW != null && gridW > VERIFY_IMPORT_W && b.totalOutputW < VERIFY_OUTPUT_W
@@ -228,14 +260,29 @@ class CalibrationMachine(
         }
     }
 
-    private fun recoverWait(run: CalibrationRun, b: BatteryState, nowMs: Long): CalibrationStep {
-        val id = b.id; val name = b.name
-        val reachable = nowMs - b.timestampMs < RECOVER_REACHABLE_MS
-        if (!reachable) {
-            if (nowMs - run.phaseSinceMs < RECOVER_REACHABLE_CAP_MS) return none(run)
-            return CalibrationStep(run.copy(phase = CalibrationPhase.VERIFY, phaseSinceMs = nowMs, conditionSinceMs = null, recoveryAttempt = run.recoveryAttempt + 1),
-                listOf(BatteryCommand.SetAdaptiveMode(id, true)),
-                listOf("$name: Zeitüberschreitung beim Warten – zurück auf Auto, prüfe erneut"))
+    /**
+     * Waits for the battery to come back after the restart. [b] is null while it does not answer.
+     *
+     * The device only counts as back when a frame arrives that is NEWER than the restart command and
+     * a minimum wait has passed, so the settle time cannot run out while the device is still booting
+     * and "back to Auto" is never sent into the void.
+     */
+    private fun recoverWait(run: CalibrationRun, id: String, b: BatteryState?, nowMs: Long): CalibrationStep {
+        val name = b?.name ?: id
+        val waited = nowMs - run.phaseSinceMs
+        val back = b != null && waited >= RECOVER_MIN_WAIT_MS &&
+            b.timestampMs > run.phaseSinceMs && nowMs - b.timestampMs < RECOVER_REACHABLE_MS
+        if (!back) {
+            if (waited < RECOVER_REACHABLE_CAP_MS) return CalibrationStep(run.copy(conditionSinceMs = null), emptyList(), emptyList())
+            // It never came back. Restoring is still queued (commands are re-sent until confirmed).
+            return CalibrationStep(
+                run.copy(
+                    phase = CalibrationPhase.ABORTED,
+                    results = run.results + BatteryCalibrationResult(id, false, "Nach dem Neustart ${RECOVER_REACHABLE_CAP_MS / 60_000} min nicht zurückgekehrt – gestoppt", nowMs),
+                ),
+                run.saved?.let { restoreCmds(id, it) } ?: emptyList(),
+                listOf("$name: nach dem Neustart nicht zurückgekehrt – Kalibrierung GESTOPPT"),
+            )
         }
         val since = run.conditionSinceMs ?: nowMs
         if (nowMs - since < RECOVER_SETTLE_MS) return CalibrationStep(run.copy(conditionSinceMs = since), emptyList(), emptyList())
@@ -283,9 +330,11 @@ class CalibrationMachine(
         const val VERIFY_OUTPUT_W = 10           // battery output below this while importing = not delivering
         const val VERIFY_FAIL_SUSTAIN_MS = 120_000L
         const val VERIFY_TIMEOUT_MS = 10 * 60_000L
+        const val RELEASE_CONFIRM_MS = 5 * 60_000L   // time the released settings get to show up on the device
         const val RECOVER_MANUAL_WAIT_MS = 15_000L
+        const val RECOVER_MIN_WAIT_MS = 20_000L      // never treat the battery as back before this (it reboots ~35 s)
         const val RECOVER_REACHABLE_MS = 30_000L // battery counts as back when its frame is younger than this
         const val RECOVER_SETTLE_MS = 60_000L
-        const val RECOVER_REACHABLE_CAP_MS = 180_000L
+        const val RECOVER_REACHABLE_CAP_MS = 10 * 60_000L
     }
 }
