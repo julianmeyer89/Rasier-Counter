@@ -66,9 +66,8 @@ fun main(args: Array<String>) {
     // "Speichern beim Beenden: de/rasier/speicher/server/MainKt$main$3$1$1", a class that was gone.
     // Creating the steps now loads their classes while the jar is still the one we started from.
     val shutdownSteps: List<Triple<String, Long, Runnable>> = listOf(
-        Triple("Speichern", SHUTDOWN_SAVE_MS, Runnable {
-            runCatching { runBlocking { hub.shutdown() } }.onFailure { log("Speichern beim Beenden: $it") }
-        }),
+        // No runBlocking here: it would need a lambda class that the replaced jar no longer holds.
+        Triple("Speichern", SHUTDOWN_SAVE_MS, Runnable { hub.shutdownBlocking() }),
         Triple("Weboberfläche", SHUTDOWN_WEB_MS, Runnable {
             runCatching { web.stop() }.onFailure { log("Weboberfläche beim Beenden: $it") }
         }),

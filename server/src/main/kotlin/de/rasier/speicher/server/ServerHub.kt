@@ -1187,7 +1187,24 @@ class ServerHub(
      * Flushes everything to disk. The service is restarted nightly by the OS and by updates, and the
      * periodic save only runs once a minute, so without this the last minute is lost every time.
      */
-    suspend fun shutdown() = mutex.withLock {
+    suspend fun shutdown() = mutex.withLock { saveEverything() }
+
+    /**
+     * The same save, without any coroutine machinery. The shutdown hook has to use this one: an update
+     * replaces server.jar while the old process still runs, and `runBlocking` there would need to load
+     * a lambda class that no longer exists - which is why the save died with a NoClassDefFoundError on
+     * exactly the restarts it is meant to cover.
+     *
+     * [tryLock] rather than waiting: a poll stuck on the cloud would otherwise hold the save off until
+     * its budget ran out. Saving beside a running poll can catch a value mid-update; a missing save
+     * loses the whole last minute, which is worse.
+     */
+    fun shutdownBlocking() {
+        val locked = mutex.tryLock()
+        try { saveEverything() } finally { if (locked) mutex.unlock() }
+    }
+
+    private fun saveEverything() {
         val now = System.currentTimeMillis()
         flushHistory(now)
         lastSaveMs = 0L

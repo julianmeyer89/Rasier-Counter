@@ -351,6 +351,21 @@ class ServerSmallFixesTest {
     private val zone = ZoneId.of("Europe/Berlin")
 
     @Test
+    fun `the shutdown hook saves without any coroutine machinery`() = runTest {
+        // The hook must not use runBlocking: an update replaces server.jar while the old process still
+        // runs, and the lambda class it would need is then gone - the save died with
+        // "NoClassDefFoundError: ...MainKt$main$shutdownSteps$1$1$1" on exactly those restarts.
+        val dir = Files.createTempDirectory("hook").toFile()
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val t0 = System.currentTimeMillis()
+        repeat(5) { hub.poll(t0 + it * 2000L) }
+        val before = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        hub.shutdownBlocking()
+        val after = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        assertTrue(after > before, "der angefangene Verlauf wurde nicht gespeichert ($before -> $after)")
+    }
+
+    @Test
     fun `shutdown writes the last minute to disk`() = runTest {
         val dir = Files.createTempDirectory("srv").toFile()
         val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
