@@ -16,6 +16,7 @@ import java.time.ZoneId
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -476,8 +477,8 @@ class ServerSmallFixesTest {
         assertTrue(hub.state.value.alerts.none { it.key == "link-down" }, "ein einzelner Aussetzer darf nicht warnen")
         hub.poll(t0 + ServerHub.LINK_ALERT_MS + 1000)
         val a = hub.state.value.alerts.firstOrNull { it.key == "link-down" }
-        assertTrue(a != null, "nach der Schwelle muss gewarnt werden")
-        assertTrue(a!!.message.contains("Minuten"), "die Warnung soll sagen, seit wann: ${a.message}")
+        assertNotNull(a, "nach der Schwelle muss gewarnt werden")
+        assertTrue(a.message.contains("Minuten"), "die Warnung soll sagen, seit wann: ${a.message}")
     }
 
     @Test

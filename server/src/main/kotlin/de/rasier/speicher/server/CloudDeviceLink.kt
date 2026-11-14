@@ -54,6 +54,7 @@ class CloudDeviceLink(
     @Volatile private var lastOutlierLogMs = 0L
     @Volatile private var lastContradictLogMs = 0L
     @Volatile private var receiver: Thread? = null
+    @Volatile private var everConnected = false
     @Volatile private var lastDisconnectLogMs = 0L
 
     override val batteryIds: List<String> get() = devices.filter { it.isBattery }.map { it.devid }
@@ -85,7 +86,12 @@ class CloudDeviceLink(
             }
             .addDisconnectedListener { ctx ->
                 connected = false
-                statusDetail = "Verbindung unterbrochen, verbinde neu…"
+                // Retry inside the client only for a connection that stood at least once. Letting it
+                // retry a failed FIRST connect is what made connectWith().send() block indefinitely:
+                // the client kept trying in the background while the call never came back, so the
+                // caller's retry loop - which logs every failure - never got its turn.
+                ctx.reconnector.reconnect(everConnected && running)
+                statusDetail = if (everConnected) "Verbindung unterbrochen, verbinde neu…" else "nicht verbunden"
                 val now = System.currentTimeMillis()
                 if (now - lastDisconnectLogMs > DISCONNECT_LOG_MS) {
                     lastDisconnectLogMs = now
@@ -117,8 +123,10 @@ class CloudDeviceLink(
         attempt.join(CONNECT_BUDGET_MS)
         if (attempt.isAlive) {
             running = false
-            runCatching { c.disconnect() }
             client = null
+            // Abandoned, not disconnected: disconnect() goes to the same stuck client and blocks just
+            // as the connect does, which left the budget doing nothing but moving the hang 90 s later.
+            Thread({ runCatching { c.disconnect() } }, "mqtt-abandon").apply { isDaemon = true }.start()
             throw IllegalStateException("Verbindungsaufbau zu $host:$port hängt seit ${CONNECT_BUDGET_MS / 1000} s")
         }
         failure.get()?.let {
@@ -128,6 +136,7 @@ class CloudDeviceLink(
         }
         log("Verbunden mit $host:$port")
         connected = true
+        everConnected = true
         statusDetail = "verbunden mit $host"
 
         // Receiver thread: store the latest payload per status topic. It must outlive single
@@ -281,6 +290,7 @@ class CloudDeviceLink(
     override fun close() {
         running = false
         connected = false
+        everConnected = false
         statusDetail = "nicht verbunden"
         // Interrupt before disconnecting: the thread blocks in publishes.receive() and the flag alone
         // never reached it, so every rebuild left a thread behind that kept writing into the same
