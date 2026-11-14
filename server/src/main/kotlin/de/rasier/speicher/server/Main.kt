@@ -20,9 +20,8 @@ private const val SHUTDOWN_LINK_MS = 5_000L
  * client that is itself stuck), so only abandoning the thread bounds them. The process is on its way
  * out, so an abandoned thread costs nothing.
  */
-private fun bounded(name: String, budgetMs: Long, log: (String) -> Unit, step: () -> Unit) {
-    val t = Thread({ runCatching { step() }.onFailure { log("$name beim Beenden: ${it.message}") } }, "shutdown-$name")
-        .apply { isDaemon = true }
+private fun bounded(name: String, budgetMs: Long, log: (String) -> Unit, step: Runnable) {
+    val t = Thread(step, "shutdown-$name").apply { isDaemon = true }
     t.start()
     t.join(budgetMs)
     if (t.isAlive) log("$name beim Beenden abgebrochen (länger als ${budgetMs / 1000} s).")
@@ -61,16 +60,26 @@ fun main(args: Array<String>) {
     val hub = ServerHub(config, link, File(config.dataDir), zone, log)
     val web = WebServer(hub, config.webPort, config.authToken)
 
+    // Built here, not inside the hook: an update replaces server.jar while the old process is still
+    // running, so a class the JVM has not loaded yet can no longer be loaded once the hook fires. That
+    // cost the save on exactly the restarts it exists for - the log said
+    // "Speichern beim Beenden: de/rasier/speicher/server/MainKt$main$3$1$1", a class that was gone.
+    // Creating the steps now loads their classes while the jar is still the one we started from.
+    val shutdownSteps: List<Triple<String, Long, Runnable>> = listOf(
+        Triple("Speichern", SHUTDOWN_SAVE_MS, Runnable {
+            runCatching { runBlocking { hub.shutdown() } }.onFailure { log("Speichern beim Beenden: $it") }
+        }),
+        Triple("Weboberfläche", SHUTDOWN_WEB_MS, Runnable {
+            runCatching { web.stop() }.onFailure { log("Weboberfläche beim Beenden: $it") }
+        }),
+        Triple("Cloud-Verbindung", SHUTDOWN_LINK_MS, Runnable {
+            runCatching { link.close() }.onFailure { log("Cloud-Verbindung beim Beenden: $it") }
+        }),
+    )
+
     Runtime.getRuntime().addShutdownHook(Thread {
         log("Beende…")
-        // Save first: the periodic save only runs once a minute, and updates restart the service.
-        // Every step is bounded. On 13.11. the hook did start - "Beende…" is in the log - and then the
-        // process still had to be SIGKILLed 90 s later, so something after that line blocked. The most
-        // likely candidate is disconnecting an MQTT client that was itself stuck, which sat outside any
-        // limit at all.
-        bounded("Speichern", SHUTDOWN_SAVE_MS, log) { runBlocking { hub.shutdown() } }
-        bounded("Weboberfläche", SHUTDOWN_WEB_MS, log) { web.stop() }
-        bounded("Cloud-Verbindung", SHUTDOWN_LINK_MS, log) { link.close() }
+        for ((name, budget, step) in shutdownSteps) bounded(name, budget, log, step)
     })
 
     web.start()

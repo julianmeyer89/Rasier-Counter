@@ -19,6 +19,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Live link to the Marstek cloud over MQTT with mutual TLS. Logs in over HTTP to learn the device
@@ -102,7 +103,29 @@ class CloudDeviceLink(
         // Logged on both sides: without this a hang here is invisible, which is why the outage showed
         // up as a log that simply stopped after the device list.
         log("Verbinde mit $host:$port …")
-        c.connectWith().keepAlive(30).cleanSession(true).send()
+        // The blocking connect does not reliably come back. HiveMQ bounds a single attempt (10 s
+        // socket, 10 s handshake, 60 s CONNACK), but with automatic reconnect switched on a refused or
+        // stalled attempt is retried inside the client instead of being thrown - and the call keeps
+        // blocking across those retries. That is how the server sat here for five and a half hours on
+        // 13.11.: no poll, no retry, no log line. Only bounding the whole call fixes that; the caller
+        // retries every 30 s and writes a line each time, which is what makes an outage visible.
+        val failure = AtomicReference<Throwable?>(null)
+        val attempt = Thread({
+            runCatching { c.connectWith().keepAlive(30).cleanSession(true).send() }.onFailure { failure.set(it) }
+        }, "mqtt-connect").apply { isDaemon = true }
+        attempt.start()
+        attempt.join(CONNECT_BUDGET_MS)
+        if (attempt.isAlive) {
+            running = false
+            runCatching { c.disconnect() }
+            client = null
+            throw IllegalStateException("Verbindungsaufbau zu $host:$port hängt seit ${CONNECT_BUDGET_MS / 1000} s")
+        }
+        failure.get()?.let {
+            running = false
+            client = null
+            throw it
+        }
         log("Verbunden mit $host:$port")
         connected = true
         statusDetail = "verbunden mit $host"
@@ -319,5 +342,8 @@ class CloudDeviceLink(
         private const val DISCONNECT_LOG_MS = 60_000L   // do not fill the log while reconnects retry
         private const val METER_OUTLIER_W = 3000   // log the raw CT002 frame above this |pwr_t| for diagnosis
         private const val OUTLIER_LOG_MS = 60_000L // at most one outlier frame per minute
+        // Longer than one full HiveMQ attempt, so a slow but working connect still completes; short
+        // enough that the caller gets to retry and log instead of the process going quiet.
+        private const val CONNECT_BUDGET_MS = 90_000L
     }
 }
