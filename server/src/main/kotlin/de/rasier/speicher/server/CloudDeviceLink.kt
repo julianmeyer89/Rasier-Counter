@@ -253,7 +253,7 @@ class CloudDeviceLink(
                 val got = e != null && e.second > (prev[d.topics.status] ?: 0L)
                 if (got) {
                     fresh++
-                    val f = CloudPayloads.parseFields(e!!.first)
+                    val f = CloudPayloads.parseFields(e.first)
                     val m = CloudPayloads.parseMeter(f, e.second)
                     val lr = lastReplyMs[d.topics.status]
                     val gap = if (lr != null) e.second - lr else -1
