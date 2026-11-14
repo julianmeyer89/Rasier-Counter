@@ -94,6 +94,7 @@ class ServerHub(
     private val accBatOut = linkedMapOf<String, Double>()
     private val accBatN = linkedMapOf<String, Int>()
     private val accSoc = linkedMapOf<String, Int>()
+    private val accBatIdle = linkedMapOf<String, Boolean>()
     private var lastBatterySnapshot: SystemSnapshot? = null
     private val chargeRemainder = HashMap<String, Double>()
     private val dischargeRemainder = HashMap<String, Double>()
@@ -712,8 +713,13 @@ class ServerHub(
                 outE[idx][slot] += (aout + bout) / 2.0 * hours
                 chgE[idx][slot] += (maxOf(apv - aout, 0) + maxOf(bpv - bout, 0)) / 2.0 * hours
                 val sa = a.soc.getOrNull(ai); val sb = b.soc.getOrNull(bi)
-                if (sa != null && sb != null && sb < sa && caps[idx] > 0 &&
-                    aout <= IDLE_W && bout <= IDLE_W && apv <= IDLE_W && bpv <= IDLE_W) {
+                // The recorded flag, not the minute mean: a mean of 67 W can be a minute that spent ten
+                // seconds at 400 W, which is not idle at all. Points written before the flag existed
+                // fall back to the old test, so old history still shows something.
+                val idle = if (a.batIdle.isNotEmpty() && b.batIdle.isNotEmpty())
+                    (a.batIdle.getOrNull(ai) ?: false) && (b.batIdle.getOrNull(bi) ?: false)
+                else aout <= IDLE_W && bout <= IDLE_W && apv <= IDLE_W && bpv <= IDLE_W
+                if (sa != null && sb != null && sb < sa && caps[idx] > 0 && idle) {
                     selfE[idx][slot] += (sa - sb) / 100.0 * caps[idx]
                 }
             }
@@ -904,6 +910,10 @@ class ServerHub(
             accBatOut[b.id] = (accBatOut[b.id] ?: 0.0) + b.totalOutputW
             accBatN[b.id] = (accBatN[b.id] ?: 0) + 1
             accSoc[b.id] = b.socPercent
+            // Idle only if EVERY sample of this minute was idle - the same test the per-poll
+            // measurement applies, so both end up with the same definition.
+            val idleNow = b.totalOutputW <= IDLE_W && b.totalPvW <= IDLE_W
+            accBatIdle[b.id] = (accBatIdle[b.id] ?: true) && idleNow
         }
     }
 
@@ -923,11 +933,12 @@ class ServerHub(
             soc = ids.map { accSoc[it] ?: -1 },
             batPvW = ids.map { mean(accBatPv, it).roundToInt() },
             batOutW = ids.map { mean(accBatOut, it).roundToInt() },
+            batIdle = ids.map { accBatIdle[it] ?: false },
             meterPhaseW = accMeterPhase,
         )
         history = (history + point).filter { nowMs - it.t <= HISTORY_MS }.takeLast(MAX_HISTORY)
         accGrid = 0.0; accGridN = 0; accMeterPhase = emptyList()
-        accBatPv.clear(); accBatOut.clear(); accBatN.clear(); accSoc.clear()
+        accBatPv.clear(); accBatOut.clear(); accBatN.clear(); accSoc.clear(); accBatIdle.clear()
     }
 
     /** Position of [id] in a history point: by id when the point carries them, else positional (old data). */

@@ -227,12 +227,13 @@ function renderBatteries(s) {
       ${row("Adaptiver Modus", b.adaptiveMode == null ? "–" : b.adaptiveMode ? "an" : "aus")}
       ${b.deliveredTodayWh != null ? row("Abgabe heute (gemessen)", KWH(b.deliveredTodayWh), "battery") : ""}
       ${b.dailyInverterWh != null ? subRow("an den Wechselrichter (Gerät)", KWH(b.dailyInverterWh)) : ""}
-      ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
-      ${b.deviceLossTodayWh ? row((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "davon nie angekommen", KWH(b.deviceLossTodayWh), "import") : ""}
+      ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${hasMeasuredPv(b) ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
       ${b.dailyPvWh != null ? (hasMeasuredPv(b) ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
-      ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : "")) : ""}
+      ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : ""), "import") : ""}
+      ${b.deviceLossTodayWh ? subRow((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "laut Gerätezähler verloren", KWH(b.deviceLossTodayWh)) : ""}
+      ${b.deviceLossTodayWh > 50 ? `<div class="note">„Verloren" ist der Zähler des Speichers selbst: Energie, die die Zellen verlassen hat und nie am Wechselrichter ankam. Liegt sie deutlich über der gemessenen Eigenentladung, ist sie abgeflossen, während der Speicher <i>nicht</i> im Leerlauf war – das misst die Eigenentladung nicht mit.</div>` : ""}
       ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}
       ${row("Firmware", b.firmware || "–")}

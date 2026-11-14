@@ -346,9 +346,49 @@ private class CapacityDropLink(zone: ZoneId) : DeviceLink {
     override fun close() {}
 }
 
+/** Lets a test decide what the batteries report as output, to drive the idle detection. */
+private class OutputLink(zone: ZoneId) : DeviceLink {
+    private val sim = de.rasier.speicher.sim.SimulatedSystem(zone)
+    var outW = 0
+    override suspend fun connect() {}
+    override suspend fun poll(nowMs: Long, pollMeter: Boolean, pollBattery: Boolean, replyWaitMs: Long) =
+        sim.advance(nowMs).let { s ->
+            s.copy(batteries = s.batteries.map { it.copy(outputW = listOf(outW), pvInputW = listOf(0)) })
+        }
+    override suspend fun send(command: BatteryCommand) = sim.execute(command)
+    override val batteryIds: List<String> get() = sim.batteryIds
+    override val status: LinkStatus get() = LinkStatus(true, "Test", null)
+    override fun close() {}
+}
+
 /** The smaller findings N1 to N7. */
 class ServerSmallFixesTest {
     private val zone = ZoneId.of("Europe/Berlin")
+
+    @Test
+    fun `a minute with any output does not count as idle`() = runTest {
+        // Self-discharge read about twice as high in the day view as in the week view, because the day
+        // view judged "idle" on the minute MEAN: 400 W for ten seconds averages to 67 W and slips under
+        // the threshold. The minute now carries a flag that is only true if every sample was idle.
+        suspend fun idleFlag(outW: Int): Boolean {
+            val dir = Files.createTempDirectory("idle").toFile()
+            val link = OutputLink(zone)
+            val hub = ServerHub(demoConfig(dir), link, dir, zone)
+            val t0 = System.currentTimeMillis()
+            link.outW = 0
+            hub.poll(t0)
+            // Within the same minute: one burst, then quiet again.
+            link.outW = outW
+            hub.poll(t0 + 20_000L)
+            link.outW = 0
+            hub.poll(t0 + 40_000L)
+            hub.poll(t0 + ServerHub.HISTORY_SAMPLE_MS + 1000)
+            val p = hub.history(24).points.last()
+            return p.batIdle.isNotEmpty() && p.batIdle.all { it }
+        }
+        assertTrue(idleFlag(0), "eine durchgehend stille Minute muss als Leerlauf gelten")
+        assertTrue(!idleFlag(400), "eine Minute mit 400 W Abgabe darf nicht als Leerlauf gelten")
+    }
 
     @Test
     fun `a known capacity survives a restart`() {

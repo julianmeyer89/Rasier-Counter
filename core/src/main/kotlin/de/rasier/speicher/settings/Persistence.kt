@@ -32,6 +32,12 @@ data class HistoryPoint(
     /** Per-battery PV input and output power, in the battery order, for per-battery charts. */
     val batPvW: List<Int> = emptyList(),
     val batOutW: List<Int> = emptyList(),
+    /**
+     * Whether each battery was idle for the WHOLE minute. A minute mean cannot answer that: 400 W for
+     * ten seconds averages to 67 W and slips under the idle threshold, so time that was not idle was
+     * counted as idle and self-discharge read about twice as high in the day view as in the week view.
+     */
+    val batIdle: List<Boolean> = emptyList(),
     /** CT002 per-phase power (pwr_a/b/c), so a grid spike can be traced to one phase afterwards. */
     val meterPhaseW: List<Int> = emptyList(),
 )
