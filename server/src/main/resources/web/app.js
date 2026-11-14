@@ -137,12 +137,22 @@ const NTFY_INFO = `
 </table>
 <p class="note"><b>Wichtig:</b> Jeder, der das Thema kennt, kann die Nachrichten mitlesen – wähle es zufällig und teile es nicht. Feld leer lassen schaltet Push aus.</p>`;
 
+const CAPACITY_INFO = `
+<p class="note">Der Speicher meldet seine Kapazität nicht direkt – sie lässt sich nur aus einer Entladung
+ableiten: Energie, die die Zellen verlassen hat, geteilt durch den Ladestand, den sie dabei verloren haben.</p>
+<p class="note">Dafür braucht es eine <b>saubere Entladung ohne PV</b>, also am Abend oder nachts. Lädt die Sonne
+nebenher mit, ist die Rechnung wertlos. Der Server sammelt solche Messungen von selbst, sobald sie sich ergeben –
+du musst nichts tun.</p>
+<p class="note">Ab zwei Messungen vergleicht er den Mittelwert mit der Kapazität, die das Gerät angibt. Weicht
+sie deutlich ab, altern die Zellen oder der Ladestand driftet – dann schlägt er eine Kalibrierung vor.</p>`;
+
 const INFO = {
   values: { title: "Was bedeuten die Werte?", body: VALUE_INFO },
   efficiency: { title: "Wirkungsgrad", body: EFFICIENCY_INFO },
   calibration: { title: "Kalibrierung empfohlen", body: CALIBRATION_INFO },
   calibproc: { title: "Kalibrier‑Ablauf", body: CALIBPROC_INFO },
   ntfy: { title: "Push über ntfy.sh", body: NTFY_INFO },
+  capacity: { title: "Kapazitätsmessung", body: CAPACITY_INFO },
 };
 
 function openInfo(key) {
@@ -234,7 +244,7 @@ function renderBatteries(s) {
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : ""), "import") : ""}
       ${b.deviceLossTodayWh ? subRow((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "laut Gerätezähler verloren", KWH(b.deviceLossTodayWh)) : ""}
       ${b.deviceLossTodayWh > 50 ? `<div class="note">„Verloren" ist der Zähler des Speichers selbst: Energie, die die Zellen verlassen hat und nie am Wechselrichter ankam. Liegt sie deutlich über der gemessenen Eigenentladung, ist sie abgeflossen, während der Speicher <i>nicht</i> im Leerlauf war – das misst die Eigenentladung nicht mit.</div>` : ""}
-      ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row("Kapazitätsmessung", b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen (braucht Entladungen ohne PV)")}
+      ${b.measuredCapacityWh != null ? row((b.calibrationRecommended ? "⚠️ Kalibrierung" : "Kalibrierung"), (b.calibrationRecommended ? "empfohlen" : "ok") + " · gemessen " + KWH(b.measuredCapacityWh) + (b.capacityDeviationPercent != null ? ` (${b.capacityDeviationPercent > 0 ? "+" : ""}${b.capacityDeviationPercent} %)` : "")) : row(`Kapazitätsmessung <button class="infobtn infobtn-inline" onclick="openInfo('capacity')" title="Erklärung">i</button>`, b.capacitySamples + " von " + b.capacitySamplesNeeded + " Messungen")}
       ${b.temperatureC != null ? row("Temperatur", b.temperatureC + " °C") : ""}
       ${row("Firmware", b.firmware || "–")}
       ${row("Aktualisiert", ago(Date.now() - b.ageSeconds * 1000))}
