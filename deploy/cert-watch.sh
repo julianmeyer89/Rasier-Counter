@@ -79,14 +79,22 @@ docker cp rasier-cert-tmp:/app/certs/hame-2025.crt "$TMP/client.crt"
 docker cp rasier-cert-tmp:/app/certs/hame-2025.key "$TMP/client.key"
 docker cp rasier-cert-tmp:/app/certs/hame-2025-url "$TMP/broker-url"
 
-# Only replace if the new client cert differs from the current one.
-if [ -f "$CERT_DIR/client.crt" ] && cmp -s "$TMP/client.crt" "$CERT_DIR/client.crt"; then
-  log "Zertifikat unverändert – upstream hat noch nicht aktualisiert. Kein Neustart."
+# Compare every file we would install, not just the client certificate. Checking only that one meant
+# a changed broker URL or CA went unnoticed and was reported as "Zertifikat unverändert" - while the
+# server kept talking to an endpoint that no longer applied.
+CHANGED=""
+for f in ca.crt client.crt client.key broker-url; do
+  if [ ! -f "$CERT_DIR/$f" ] || ! cmp -s "$TMP/$f" "$CERT_DIR/$f"; then
+    CHANGED="$CHANGED $f"
+  fi
+done
+if [ -z "$CHANGED" ]; then
+  log "Zertifikat, Schlüssel, CA und Broker-URL unverändert – upstream hat noch nicht aktualisiert. Kein Neustart."
   exit 0
 fi
 
 mkdir -p "$CERT_DIR"
 cp -f "$TMP/ca.crt" "$TMP/client.crt" "$TMP/client.key" "$TMP/broker-url" "$CERT_DIR/"
-log "Neues Zertifikat installiert, starte Dienst neu…"
+log "Geändert:$CHANGED – installiert, starte Dienst neu…"
 sudo systemctl restart "$SERVICE"
 log "Fertig. Prüfe beim nächsten Lauf, ob die Verbindung wieder steht."
