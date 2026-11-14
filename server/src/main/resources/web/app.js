@@ -72,7 +72,7 @@ const VALUE_INFO = `
 <p class="note">Ohne DTU sind einige Werte geschätzt. Die exakten Netzwerte stehen in „Zählerbasiert“, sobald zwei Ablesungen vorliegen.</p>
 <p class="note">Die Werte sind gruppiert in <b>Verbrauch</b> (was das Haus braucht) und <b>Erzeugung</b> (was die Solaranlage liefert).</p>
 <p class="note"><b>Grundlage:</b> Wechselrichter-Abgabe = Speicherabgabe × Wirkungsgrad (höchstens die WR-Maximalleistung). Daraus folgen die übrigen Werte:</p>
-<p class="note"><b>Zwei Quellen für den Solarertrag:</b> Der <b>Solarertrag</b> hier ist unsere eigene Messung – die PV-Leistung wird laufend abgefragt und aufsummiert. Im Speicher-Block stehen beide Zahlen direkt untereinander: <b>„PV heute (gemessen)"</b> ist dieselbe Messung für diesen einen Speicher, <b>„Gerätezähler"</b> der Tageszähler des Speichers selbst, und der Prozentwert daneben der aktuelle Abstand. Unsere Messung liegt regelmäßig etwa 5 bis 8 % höher. Beide Zahlen sind plausibel, sie zählen nur an verschiedenen Stellen – die naheliegende Erklärung ist, dass der Speicher erst hinter seinem Laderegler zählt. Die beiden Gerätezähler ergeben zusammen deshalb <i>nicht</i> genau den Solarertrag.</p>
+<p class="note"><b>Zwei Quellen für den Solarertrag:</b> Der <b>Solarertrag</b> hier ist unsere eigene Messung – die PV-Leistung wird laufend abgefragt und aufsummiert. Im Speicher-Block stehen beide Zahlen direkt untereinander: <b>„PV heute (gemessen)"</b> ist dieselbe Messung für diesen einen Speicher, <b>„PV laut Gerätezähler"</b> der Tageszähler des Speichers selbst, und der Prozentwert daneben der aktuelle Abstand. Unsere Messung liegt regelmäßig etwa 5 bis 8 % höher. Beide Zahlen sind plausibel, sie zählen nur an verschiedenen Stellen – die naheliegende Erklärung ist, dass der Speicher erst hinter seinem Laderegler zählt. Die beiden Gerätezähler ergeben zusammen deshalb <i>nicht</i> genau den Solarertrag.</p>
 <table class="info-table">
   <tr><th>Wert</th><th>Berechnung</th></tr>
   <tr><td>Hausverbrauch</td><td>= „davon Solar“ + „aus dem Netz“</td></tr>
@@ -230,7 +230,7 @@ function renderBatteries(s) {
       ${b.dailyOutputWh != null ? subRow("aus den Zellen entnommen (Gerät)", KWH(b.dailyOutputWh)) : ""}
       ${b.dailyChargeWh != null ? subRow("in den Akku geladen (Gerät)", KWH(b.dailyChargeWh)) : ""}
       ${hasMeasuredPv(b) ? row("PV heute (gemessen)", KWH(b.measuredPvTodayWh), "solar") : ""}
-      ${b.dailyPvWh != null ? (hasMeasuredPv(b) ? subRow("Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
+      ${b.dailyPvWh != null ? (hasMeasuredPv(b) ? subRow("PV laut Gerätezähler", KWH(b.dailyPvWh) + pvGap(b)) : row("PV heute (Gerätezähler)", KWH(b.dailyPvWh), "solar")) : ""}
       ${b.selfDischargeTodayWh != null ? row((b.selfDischargeHigh ? "⚠️ " : "") + "Eigenentladung heute", KWH(b.selfDischargeTodayWh) + (b.selfDischargeW != null ? ` (~${b.selfDischargeW} W)` : ""), "import") : ""}
       ${b.deviceLossTodayWh ? subRow((b.deviceLossTodayWh > 50 ? "⚠️ " : "") + "laut Gerätezähler verloren", KWH(b.deviceLossTodayWh)) : ""}
       ${b.deviceLossTodayWh > 50 ? `<div class="note">„Verloren" ist der Zähler des Speichers selbst: Energie, die die Zellen verlassen hat und nie am Wechselrichter ankam. Liegt sie deutlich über der gemessenen Eigenentladung, ist sie abgeflossen, während der Speicher <i>nicht</i> im Leerlauf war – das misst die Eigenentladung nicht mit.</div>` : ""}
