@@ -8,6 +8,8 @@ import de.rasier.speicher.energy.MeterEntry
 import de.rasier.speicher.model.SystemSnapshot
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import java.io.File
 
 /**
@@ -83,6 +85,18 @@ class FileStore(private val dir: File, private val log: (String) -> Unit = {}) {
 
     fun loadMeterEntries(): List<MeterEntry> = read("meter.json", ListSerializer(MeterEntry.serializer())) ?: emptyList()
     fun saveMeterEntries(entries: List<MeterEntry>) = write("meter.json", ListSerializer(MeterEntry.serializer()), entries)
+
+    /**
+     * Last usable capacity seen per battery. The device does not report it directly: it is derived
+     * from stored energy divided by SOC, so a battery sitting at 0 % yields nothing. Without keeping
+     * it across restarts, capacity and stored energy read as blank after every update until the
+     * battery happens to be above 0 % again - and self-discharge, which needs the capacity, is not
+     * measured in the meantime.
+     */
+    fun loadCapacities(): Map<String, Int> =
+        read("capacities.json", MapSerializer(String.serializer(), Int.serializer())) ?: emptyMap()
+    fun saveCapacities(byId: Map<String, Int>) =
+        write("capacities.json", MapSerializer(String.serializer(), Int.serializer()), byId)
 
     fun loadDeviceDays(): List<DeviceDay> = read("device_days.json", ListSerializer(DeviceDay.serializer())) ?: emptyList()
     fun saveDeviceDays(days: List<DeviceDay>) = write("device_days.json", ListSerializer(DeviceDay.serializer()), days)

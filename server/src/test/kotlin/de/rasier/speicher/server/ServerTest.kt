@@ -351,6 +351,30 @@ class ServerSmallFixesTest {
     private val zone = ZoneId.of("Europe/Berlin")
 
     @Test
+    fun `a known capacity survives a restart`() {
+        // The device never reports capacity directly: it is stored energy divided by SOC, so a battery
+        // sitting at 0 % yields nothing at all. Kept only in memory, capacity and stored energy read as
+        // blank after every update until that battery is above 0 % again - and self-discharge, which
+        // needs the capacity, is not measured meanwhile.
+        val dir = Files.createTempDirectory("cap").toFile()
+        val t0 = System.currentTimeMillis()
+        kotlinx.coroutines.runBlocking {
+            val first = ServerHub(demoConfig(dir), CapacityDropLink(zone), dir, zone)
+            first.poll(t0)
+            assertTrue(first.state.value.batteries.all { it.capacityWh != null }, "Kapazität muss zuerst bekannt sein")
+        }
+        assertTrue(de.rasier.speicher.settings.FileStore(dir).loadCapacities().isNotEmpty(), "Kapazität wurde nicht abgelegt")
+
+        kotlinx.coroutines.runBlocking {
+            // A fresh process, and the device reports no capacity any more.
+            val restarted = ServerHub(demoConfig(dir), CapacityDropLink(zone).apply { drop = true }, dir, zone)
+            restarted.poll(t0 + 60_000L)
+            assertTrue(restarted.state.value.batteries.all { it.capacityWh != null },
+                "nach dem Neustart ist die Kapazität verloren: ${restarted.state.value.batteries.map { it.capacityWh }}")
+        }
+    }
+
+    @Test
     fun `the shutdown hook saves without any coroutine machinery`() = runTest {
         // The hook must not use runBlocking: an update replaces server.jar while the old process still
         // runs, and the lambda class it would need is then gone - the save died with

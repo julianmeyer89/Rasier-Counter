@@ -128,7 +128,8 @@ class ServerHub(
     private var lastAutoSaveMs = 0L
     private val pushedAlertKeys = mutableSetOf<String>()
     /** Last capacity a battery reported; `kn / soc` is undefined at 0 %. */
-    private val lastKnownCapacity = linkedMapOf<String, Int>()
+    private val lastKnownCapacity = linkedMapOf<String, Int>().apply { putAll(store.loadCapacities()) }
+    private var savedCapacities: Map<String, Int> = lastKnownCapacity.toMap()
     // Settings that were sent but not yet confirmed by the device, plus the warnings about those
     // that never arrived (kept apart from the monitor alerts, which are replaced on every tick).
     private val pending = mutableListOf<PendingWrite>()
@@ -235,6 +236,10 @@ class ServerHub(
 
         snapshot.batteries.forEach { b ->
             b.capacityWh?.let { lastKnownCapacity[b.id] = it }
+            if (lastKnownCapacity != savedCapacities) {
+                savedCapacities = lastKnownCapacity.toMap()
+                store.saveCapacities(savedCapacities)
+            }
             lastBatteries[b.id] = if (b.capacityWh == null) b.copy(capacityWh = lastKnownCapacity[b.id]) else b
         }
         snapshot.meter?.let { lastMeter = it }
