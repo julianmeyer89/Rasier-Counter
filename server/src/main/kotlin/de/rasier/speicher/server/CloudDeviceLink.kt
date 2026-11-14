@@ -19,6 +19,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -55,6 +56,17 @@ class CloudDeviceLink(
     @Volatile private var lastContradictLogMs = 0L
     @Volatile private var receiver: Thread? = null
     @Volatile private var everConnected = false
+
+    /**
+     * Re-subscribing after a reconnect must not happen on the client's own event loop. HiveMQ invokes
+     * the connected listener from MqttConnectHandler.readConnAck BEFORE it releases the connect call
+     * (bytecode offsets 256 and 286), on the thread that decodes incoming packets - and the blocking
+     * subscribe waits for a SUBACK only that same thread could decode. One daemon thread, so repeated
+     * reconnects cannot pile up.
+     */
+    private val subscribeExec = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "mqtt-subscribe").apply { isDaemon = true }
+    }
     @Volatile private var lastDisconnectLogMs = 0L
 
     override val batteryIds: List<String> get() = devices.filter { it.isBattery }.map { it.devid }
@@ -82,7 +94,11 @@ class CloudDeviceLink(
             .addConnectedListener {
                 connected = true
                 statusDetail = "verbunden mit $host"
-                subscribeAll()
+                // Never inline: see subscribeExec. Calling subscribeAll() here froze the event loop
+                // inside the CONNACK handler, so the connect never completed and no timeout could fire
+                // - the thread that would have run them was the one blocked. The first subscribe is
+                // done by connect() itself on the main thread; this is only for reconnects.
+                if (everConnected) subscribeExec.execute { subscribeAll() }
             }
             .addDisconnectedListener { ctx ->
                 connected = false
