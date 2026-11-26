@@ -1065,7 +1065,7 @@ class ServerHub(
             }
         }
         if (days != deviceDays) {
-            val cutoff = LocalDate.now(zone).minusDays(800).toString()
+            val cutoff = LocalDate.now(zone).minusDays(KEEP_DAYS).toString()
             deviceDays = days.filter { it.date >= cutoff }
         }
     }
@@ -1159,7 +1159,7 @@ class ServerHub(
     private fun persist(nowMs: Long) {
         if (nowMs - lastSaveMs < SAVE_INTERVAL_MS) return
         lastSaveMs = nowMs
-        val cutoff = LocalDate.now(zone).minusDays(730).toString()
+        val cutoff = LocalDate.now(zone).minusDays(KEEP_DAYS).toString()
         store.saveDays(integrator.totals.values.filter { it.date >= cutoff })
         store.saveDeviceDays(deviceDays)
         // The history file is by far the biggest; rewriting it every minute is a lot of disk traffic
@@ -1389,6 +1389,15 @@ class ServerHub(
         const val MIN_CALIBRATION_DOD = 10            // below this a released battery could not discharge
         const val METER_RECOVERY_TRIES = 3            // reconnect attempts per silent spell of the CT002
         const val HISTORY_SAVE_MS = 300_000L          // the chart history is written at most this often
+        /**
+         * How long daily rows are kept. This used to be 730 days for the totals and 800 for the device
+         * counters, which would have started dropping the first November in November 2028 - and with it
+         * any comparison between one year and the next, which is most of the reason for collecting
+         * them. A daily row costs about 250 bytes, so both files together grow by roughly 250 KB a
+         * year: twenty years of them is 5 MB. The cap is a backstop against something pathological,
+         * not a storage budget. The chart history is unaffected; it rolls over eight days regardless.
+         */
+        const val KEEP_DAYS = 365L * 20
         const val CAP_MIN_DROP_PCT = 25               // minimum SOC drop for a usable capacity measurement
         const val CAP_MIN_SAMPLES = 2                 // measurements needed before judging
         const val CAP_SAMPLES_USED = 5                // recent measurements used for the median

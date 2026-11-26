@@ -391,6 +391,31 @@ class ServerSmallFixesTest {
     }
 
     @Test
+    fun `daily totals are kept long enough to compare years`() = runTest {
+        // They used to be dropped after 730 days, which for this installation would have started
+        // deleting November 2026 in November 2028 - taking the year-on-year comparison with it, for a
+        // saving of 250 KB a year.
+        val dir = Files.createTempDirectory("keep").toFile()
+        val store = de.rasier.speicher.settings.FileStore(dir)
+        val today = java.time.LocalDate.now(zone)
+        val inside = today.minusDays(ServerHub.KEEP_DAYS - 10).toString()
+        val beyond = today.minusDays(ServerHub.KEEP_DAYS + 10).toString()
+        store.saveDays(listOf(
+            de.rasier.speicher.energy.DailyEnergy(date = inside, gridImportWh = 1000.0),
+            de.rasier.speicher.energy.DailyEnergy(date = beyond, gridImportWh = 2000.0),
+        ))
+
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        hub.poll(System.currentTimeMillis())
+        val kept = de.rasier.speicher.settings.FileStore(dir).loadDays().map { it.date }
+        assertTrue(inside in kept, "ein Tag innerhalb der Aufbewahrung muss bleiben")
+        assertTrue(beyond !in kept, "ein Tag jenseits der Aufbewahrung muss wegfallen")
+
+        // And the window itself has to stay wide enough to be worth having.
+        assertTrue(ServerHub.KEEP_DAYS >= 365L * 10, "weniger als zehn Jahre sind zu wenig für Jahresvergleiche")
+    }
+
+    @Test
     fun `a known capacity survives a restart`() {
         // The device never reports capacity directly: it is stored energy divided by SOC, so a battery
         // sitting at 0 % yields nothing at all. Kept only in memory, capacity and stored energy read as
