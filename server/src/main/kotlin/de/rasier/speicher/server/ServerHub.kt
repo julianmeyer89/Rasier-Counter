@@ -60,7 +60,15 @@ class ServerHub(
     private var autoState: AutomationState = store.loadAutomation()
     private var deviceDays: List<DeviceDay> = store.loadDeviceDays()
     private var meterEntries: List<MeterEntry> = store.loadMeterEntries()
-    private var history: List<HistoryPoint> = store.loadHistory()
+    /**
+     * The recent window only. The full history lives in one file per day; this holds the last
+     * [MEM_HISTORY_MS] so the overview chart and today's views need no disk at all.
+     */
+    private var history: List<HistoryPoint> = emptyList()
+    private val dirtyHistoryDates = linkedSetOf<String>()
+    private var historyCacheDate: String? = null
+    private var historyCache: List<HistoryPoint> = emptyList()
+    private var lastHistoryPruneDay = ""
     private var events: List<EventEntry> = store.loadEvents()
     private var alerts: List<Alert> = store.loadAlerts()
     private val lastBatteries = linkedMapOf<String, BatteryState>()
@@ -151,6 +159,8 @@ class ServerHub(
     init {
         // Dashboard settings override the config file so they survive restarts and updates.
         loadSavedSettings()
+        splitLegacyHistory()
+        history = loadRecentHistory(System.currentTimeMillis())
         runCatching {
             if (capacitySamplesFile.exists())
                 capacitySamples = json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(CapacitySample.serializer()), capacitySamplesFile.readText())
@@ -601,8 +611,16 @@ class ServerHub(
     )
 
     fun history(hours: Int): HistoryDto {
-        val cutoff = System.currentTimeMillis() - hours * 3_600_000L
-        return HistoryDto(history.filter { it.t >= cutoff })
+        val wantedMs = hours * 3_600_000L
+        val cutoff = System.currentTimeMillis() - wantedMs
+        if (wantedMs <= MEM_HISTORY_MS) return HistoryDto(history.filter { it.t >= cutoff })
+        // Beyond the window the day files are read. The dashboard asks for 24 hours, so this is rare.
+        val to = LocalDate.now(zone)
+        val from = Instant.ofEpochMilli(cutoff).atZone(zone).toLocalDate()
+        val stored = generateSequence(from) { d -> d.plusDays(1).takeIf { !it.isAfter(to) } }
+            .flatMap { store.loadHistoryDay(it.toString()).asSequence() }
+        return HistoryDto((stored.toList() + history).filter { it.t >= cutoff }
+            .distinctBy { it.t }.sortedBy { it.t })
     }
 
     fun events(): List<EventDto> = events.takeLast(100).reversed().map { EventDto(it.t, it.text) }
@@ -677,7 +695,7 @@ class ServerHub(
         val slotMs = 5 * 60_000L; val slots = 288
         val ids = link.batteryIds
         val caps = ids.map { lastBatteries[it]?.capacityWh ?: 0 }
-        val points = history.filter { it.t >= dayStart && it.t < dayEnd }.sortedBy { it.t }
+        val points = pointsOfDay(day, dayStart, dayEnd)
         // Energy (Wh) per slot, plus covered hours per slot, so power = energy / coveredHours.
         val pvE = Array(ids.size) { DoubleArray(slots) }
         val outE = Array(ids.size) { DoubleArray(slots) }
@@ -796,7 +814,7 @@ class ServerHub(
         val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         val slotMs = 5 * 60_000L
         val slots = 288
-        val points = history.filter { it.t >= dayStart && it.t < dayEnd }.sortedBy { it.t }
+        val points = pointsOfDay(day, dayStart, dayEnd)
         val eff = config.system.inverterEfficiency
         val cap = config.system.inverterMaxW.toDouble()
         // The same gap limit the integrator uses. With a longer one here the statistics bridge gaps
@@ -848,7 +866,7 @@ class ServerHub(
         // Not dayStart + 24 h: a clock change makes the day 23 or 25 hours long, and a fixed span
         // either cuts the last hour off October's day or pulls an hour of the next day into March's.
         val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        val points = history.filter { it.t >= dayStart && it.t < dayEnd }.sortedBy { it.t }
+        val points = pointsOfDay(day, dayStart, dayEnd)
         val eff = config.system.inverterEfficiency
         val cap = config.system.inverterMaxW.toDouble()
         val maxGap = config.system.maxGapMs
@@ -936,9 +954,77 @@ class ServerHub(
             batIdle = ids.map { accBatIdle[it] ?: false },
             meterPhaseW = accMeterPhase,
         )
-        history = (history + point).filter { nowMs - it.t <= HISTORY_MS }.takeLast(MAX_HISTORY)
+        history = (history + point).filter { nowMs - it.t <= MEM_HISTORY_MS }.takeLast(MAX_HISTORY)
+        dirtyHistoryDates += dateOf(point.t)
         accGrid = 0.0; accGridN = 0; accMeterPhase = emptyList()
         accBatPv.clear(); accBatOut.clear(); accBatN.clear(); accSoc.clear(); accBatIdle.clear()
+    }
+
+    private fun dateOf(t: Long): String = Instant.ofEpochMilli(t).atZone(zone).toLocalDate().toString()
+
+    /** One-off on first start after the change: older versions kept the whole history in one file. */
+    private fun splitLegacyHistory() {
+        val legacy = runCatching { store.loadHistory() }.getOrDefault(emptyList())
+        if (legacy.isEmpty()) return
+        val byDate = legacy.groupBy { dateOf(it.t) }
+        byDate.forEach { (date, pts) -> store.saveHistoryDay(date, pts.sortedBy { it.t }) }
+        if (store.retireLegacyHistory()) log("Verlauf auf ${byDate.size} Tagesdateien aufgeteilt.")
+    }
+
+    /** The window held in memory, assembled from yesterday's and today's file. */
+    private fun loadRecentHistory(nowMs: Long): List<HistoryPoint> {
+        val cutoff = nowMs - MEM_HISTORY_MS
+        val today = LocalDate.now(zone)
+        return listOf(today.minusDays(1), today)
+            .flatMap { store.loadHistoryDay(it.toString()) }
+            .filter { it.t >= cutoff }
+            .distinctBy { it.t }
+            .sortedBy { it.t }
+            .takeLast(MAX_HISTORY)
+    }
+
+    /**
+     * Writes the day files that got new points. The window covers the last two days in full, and a
+     * date is only ever marked while points are being appended to it, so what is written is the whole
+     * day - a day file is never truncated to the window.
+     */
+    private fun saveDirtyHistory() {
+        if (dirtyHistoryDates.isEmpty()) return
+        for (date in dirtyHistoryDates) {
+            val pts = history.filter { dateOf(it.t) == date }
+            if (pts.isNotEmpty()) store.saveHistoryDay(date, pts)
+            if (historyCacheDate == date) historyCacheDate = null
+        }
+        dirtyHistoryDates.clear()
+    }
+
+    /** Drops day files beyond [HISTORY_KEEP_DAYS]. Once a day is often enough. */
+    private fun pruneHistoryFiles(nowMs: Long) {
+        val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
+        if (today.toString() == lastHistoryPruneDay) return
+        lastHistoryPruneDay = today.toString()
+        val cutoff = today.minusDays(HISTORY_KEEP_DAYS).toString()
+        store.historyDates().filter { it < cutoff }.forEach { store.deleteHistoryDay(it) }
+    }
+
+    private fun historyOfDate(date: String): List<HistoryPoint> {
+        if (historyCacheDate != date) {
+            historyCache = store.loadHistoryDay(date)
+            historyCacheDate = date
+        }
+        return historyCache
+    }
+
+    /**
+     * The minute points of one day: straight from memory when the window reaches back that far,
+     * otherwise from that day's file. For the day the window begins in, both are merged - the file
+     * ends where the last save left it and the window carries what came after.
+     */
+    private fun pointsOfDay(day: LocalDate, dayStart: Long, dayEnd: Long): List<HistoryPoint> {
+        val inWindow = history.filter { it.t >= dayStart && it.t < dayEnd }
+        if ((history.firstOrNull()?.t ?: Long.MAX_VALUE) <= dayStart) return inWindow.sortedBy { it.t }
+        val stored = historyOfDate(day.toString()).filter { it.t >= dayStart && it.t < dayEnd }
+        return (stored + inWindow).distinctBy { it.t }.sortedBy { it.t }
     }
 
     /** Position of [id] in a history point: by id when the point carries them, else positional (old data). */
@@ -1162,11 +1248,13 @@ class ServerHub(
         val cutoff = LocalDate.now(zone).minusDays(KEEP_DAYS).toString()
         store.saveDays(integrator.totals.values.filter { it.date >= cutoff })
         store.saveDeviceDays(deviceDays)
-        // The history file is by far the biggest; rewriting it every minute is a lot of disk traffic
-        // for a chart. A few minutes of history is an acceptable loss after a hard kill.
+        // Only the days that got new points, and only every few minutes: a chart does not justify
+        // rewriting anything on every poll. A few minutes of history is an acceptable loss after a
+        // hard kill.
         if (nowMs - lastHistorySaveMs >= HISTORY_SAVE_MS) {
             lastHistorySaveMs = nowMs
-            store.saveHistory(history)
+            saveDirtyHistory()
+            pruneHistoryFiles(nowMs)
         }
     }
 
@@ -1357,8 +1445,11 @@ class ServerHub(
     )
 
     companion object {
-        const val HISTORY_MS = 8 * 24 * 3_600_000L
-        const val MAX_HISTORY = 12_000
+        /** How much of the history is held in memory: enough for the 24-hour chart and for today. */
+        const val MEM_HISTORY_MS = 48 * 3_600_000L
+        const val MAX_HISTORY = 4_000
+        /** How long the per-day history files are kept. A year of them is about 120 MB. */
+        const val HISTORY_KEEP_DAYS = 365L
         const val HISTORY_SAMPLE_MS = 60_000L
         /**
          * Percent of a day our own measurement must cover before it is preferred over the device counter.

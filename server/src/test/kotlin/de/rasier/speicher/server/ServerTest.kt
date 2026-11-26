@@ -361,6 +361,12 @@ private class OutputLink(zone: ZoneId) : DeviceLink {
     override fun close() {}
 }
 
+/** Minute points across all stored day files - the history is no longer a single file. */
+private fun storedHistoryPoints(dir: File): Int {
+    val store = de.rasier.speicher.settings.FileStore(dir)
+    return store.historyDates().sumOf { store.loadHistoryDay(it).size }
+}
+
 /** The smaller findings N1 to N7. */
 class ServerSmallFixesTest {
     private val zone = ZoneId.of("Europe/Berlin")
@@ -388,6 +394,63 @@ class ServerSmallFixesTest {
         }
         assertTrue(idleFlag(0), "eine durchgehend stille Minute muss als Leerlauf gelten")
         assertTrue(!idleFlag(400), "eine Minute mit 400 W Abgabe darf nicht als Leerlauf gelten")
+    }
+
+    @Test
+    fun `a day beyond the memory window still has its chart`() = runTest {
+        // Only the last 48 hours are held in memory now; anything older has to be read from that day's
+        // own file. This is what the split buys - before it, the whole history was one blob trimmed to
+        // eight days, and nothing beyond that could be charted at all.
+        val dir = Files.createTempDirectory("hist").toFile()
+        val day = java.time.LocalDate.now(zone).minusDays(10)
+        val noon = day.atStartOfDay(zone).toInstant().toEpochMilli() + 12 * 3_600_000L
+        val pts = (0 until 60).map { i ->
+            de.rasier.speicher.settings.HistoryPoint(
+                t = noon + i * 60_000L, gridW = 500, pvW = 200, outW = 0, soc = listOf(50))
+        }
+        de.rasier.speicher.settings.FileStore(dir).saveHistoryDay(day.toString(), pts)
+
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        val stats = hub.stats(day, day, ServerHub.Bucket.HOUR, "Test")
+        assertTrue(stats.total.pvWh > 150.0,
+            "der Tag aus der Datei muss im Diagramm ankommen (waren ${stats.total.pvWh} Wh)")
+    }
+
+    @Test
+    fun `an old single-file history is split into day files and kept`() = runTest {
+        val dir = Files.createTempDirectory("mig").toFile()
+        val older = java.time.LocalDate.now(zone).minusDays(4)
+        val newer = java.time.LocalDate.now(zone).minusDays(3)
+        fun at(d: java.time.LocalDate) = de.rasier.speicher.settings.HistoryPoint(
+            t = d.atStartOfDay(zone).toInstant().toEpochMilli() + 10 * 3_600_000L,
+            gridW = 100, pvW = 0, outW = 0, soc = listOf(50))
+        de.rasier.speicher.settings.FileStore(dir).saveHistory(listOf(at(older), at(newer)))
+
+        ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+
+        val dates = de.rasier.speicher.settings.FileStore(dir).historyDates()
+        assertTrue(older.toString() in dates && newer.toString() in dates, "beide Tage fehlen: $dates")
+        assertTrue(!File(dir, "history.json").exists(), "die alte Datei darf nicht erneut gelesen werden")
+        assertTrue(File(dir, "history.json.aufgeteilt").exists(), "sie muss aber erhalten bleiben")
+    }
+
+    @Test
+    fun `history files beyond the retention are deleted`() = runTest {
+        val dir = Files.createTempDirectory("prune").toFile()
+        val old = java.time.LocalDate.now(zone).minusDays(ServerHub.HISTORY_KEEP_DAYS + 5)
+        val keep = java.time.LocalDate.now(zone).minusDays(ServerHub.HISTORY_KEEP_DAYS - 5)
+        fun at(d: java.time.LocalDate) = de.rasier.speicher.settings.HistoryPoint(
+            t = d.atStartOfDay(zone).toInstant().toEpochMilli(), gridW = 1, pvW = 0, outW = 0, soc = listOf(1))
+        val store = de.rasier.speicher.settings.FileStore(dir)
+        store.saveHistoryDay(old.toString(), listOf(at(old)))
+        store.saveHistoryDay(keep.toString(), listOf(at(keep)))
+
+        val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
+        hub.poll(System.currentTimeMillis())
+
+        val left = de.rasier.speicher.settings.FileStore(dir).historyDates()
+        assertTrue(keep.toString() in left, "ein Tag innerhalb der Aufbewahrung muss bleiben")
+        assertTrue(old.toString() !in left, "ein Tag jenseits der Aufbewahrung muss weg")
     }
 
     @Test
@@ -448,9 +511,9 @@ class ServerSmallFixesTest {
         val hub = ServerHub(demoConfig(dir), SimDeviceLink(zone), dir, zone)
         val t0 = System.currentTimeMillis()
         repeat(5) { hub.poll(t0 + it * 2000L) }
-        val before = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        val before = storedHistoryPoints(dir)
         hub.shutdownBlocking()
-        val after = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        val after = storedHistoryPoints(dir)
         assertTrue(after > before, "der angefangene Verlauf wurde nicht gespeichert ($before -> $after)")
     }
 
@@ -462,9 +525,9 @@ class ServerSmallFixesTest {
         // The first poll already writes a point; the following ones only accumulate, because both the
         // minute of the history and the save interval have not elapsed again.
         repeat(5) { hub.poll(t0 + it * 2000L) }
-        val before = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        val before = storedHistoryPoints(dir)
         hub.shutdown()
-        val after = de.rasier.speicher.settings.FileStore(dir).loadHistory().size
+        val after = storedHistoryPoints(dir)
         assertTrue(after > before, "beim Beenden wurde der angefangene Verlauf nicht gespeichert ($before -> $after)")
     }
 

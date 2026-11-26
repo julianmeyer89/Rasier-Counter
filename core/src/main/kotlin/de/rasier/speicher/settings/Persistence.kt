@@ -80,8 +80,47 @@ class FileStore(private val dir: File, private val log: (String) -> Unit = {}) {
     fun loadAutomation(): AutomationState = read("automation.json", AutomationState.serializer()) ?: AutomationState()
     fun saveAutomation(state: AutomationState) = write("automation.json", AutomationState.serializer(), state)
 
+    /**
+     * The minute history lives in one file per day under `history/`, because it is by far the largest
+     * data this keeps: a year of it is about 120 MB. As a single file, rewritten whole every few
+     * minutes the way every other file here is, that would have meant some 34 GB of disk writes a day
+     * and the whole year resident in memory. Per day it is a few hundred kilobytes, and only the
+     * current day is ever written.
+     */
+    fun loadHistoryDay(date: String): List<HistoryPoint> =
+        read("$HISTORY_DIR/$date.json", ListSerializer(HistoryPoint.serializer())) ?: emptyList()
+
+    fun saveHistoryDay(date: String, points: List<HistoryPoint>) {
+        File(dir, HISTORY_DIR).mkdirs()
+        // No .bak for these: a finished day is never written again, and a copy of each would double
+        // the one thing here that is actually large.
+        write("$HISTORY_DIR/$date.json", ListSerializer(HistoryPoint.serializer()), points, backup = false)
+    }
+
+    /** The dates that have a stored day file, oldest first. */
+    fun historyDates(): List<String> =
+        (File(dir, HISTORY_DIR).listFiles() ?: emptyArray())
+            .filter { it.isFile && it.name.endsWith(".json") }
+            .map { it.name.removeSuffix(".json") }
+            .filter { it.length == 10 && it[4] == '-' && it[7] == '-' }
+            .sorted()
+
+    fun deleteHistoryDay(date: String) {
+        File(File(dir, HISTORY_DIR), "$date.json").delete()
+    }
+
+    /**
+     * The single history file. The Android hub still uses it, and the server reads it once to split
+     * it into day files.
+     */
     fun loadHistory(): List<HistoryPoint> = read("history.json", ListSerializer(HistoryPoint.serializer())) ?: emptyList()
     fun saveHistory(points: List<HistoryPoint>) = write("history.json", ListSerializer(HistoryPoint.serializer()), points)
+
+    /** Renamed, not deleted: if the split went wrong the original is still there. */
+    fun retireLegacyHistory(): Boolean {
+        val f = File(dir, "history.json")
+        return f.exists() && f.renameTo(File(dir, "history.json.aufgeteilt"))
+    }
 
     fun loadEvents(): List<EventEntry> = read("events.json", ListSerializer(EventEntry.serializer())) ?: emptyList()
     fun saveEvents(events: List<EventEntry>) = write("events.json", ListSerializer(EventEntry.serializer()), events)
@@ -129,11 +168,16 @@ class FileStore(private val dir: File, private val log: (String) -> Unit = {}) {
      * Atomic write: a crash during saving never leaves a half-written file. Once per [BACKUP_MS] the
      * previous content is kept as `<name>.bak`, so a bad write or a format change stays recoverable.
      */
-    private fun <T> write(name: String, serializer: kotlinx.serialization.KSerializer<T>, value: T) {
+    private fun <T> write(
+        name: String,
+        serializer: kotlinx.serialization.KSerializer<T>,
+        value: T,
+        backup: Boolean = true,
+    ) {
         val tmp = File(dir, "$name.tmp")
         tmp.writeText(json.encodeToString(serializer, value))
         val target = File(dir, name)
-        if (target.exists()) {
+        if (backup && target.exists()) {
             val bak = File(dir, "$name.bak")
             if (!bak.exists() || System.currentTimeMillis() - bak.lastModified() > BACKUP_MS) {
                 runCatching { target.copyTo(bak, overwrite = true) }
@@ -148,5 +192,6 @@ class FileStore(private val dir: File, private val log: (String) -> Unit = {}) {
     companion object {
         /** Minimum age of the `.bak` copy before it is refreshed (keeps the write load low). */
         const val BACKUP_MS = 12 * 3_600_000L
+        const val HISTORY_DIR = "history"
     }
 }
